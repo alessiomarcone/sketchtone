@@ -1,0 +1,478 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sketchtone</title>
+  <meta name="description" content="Draw lines and hear them as sound.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 28'%3E%3Crect width='28' height='28' rx='8' fill='%235151cd'/%3E%3Cpath d='M5 17c3 0 3-7 6-7s3 9 6 9 3-6 6-6' stroke='white' stroke-width='2.4' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
+  <script>try { document.documentElement.dataset.theme = localStorage.getItem('sketchtone.theme') || 'light'; } catch (e) { document.documentElement.dataset.theme = 'light'; }</script>
+  <link rel="stylesheet" href="styles.css?v=20261002g">
+  <script defer src="js/sounds.js?v=20261002g"></script>
+  <script defer src="js/fx.js?v=20261002g"></script>
+  <script defer src="js/drums.js?v=20261002g"></script>
+  <script defer src="js/shapes.js?v=20261002g"></script>
+  <script defer src="js/patterns.js?v=20261002g"></script>
+  <script defer src="js/voice.js?v=20261002g"></script>
+  <script defer src="js/audio.js?v=20261002g"></script>
+  <script defer src="js/knob.js?v=20261002g"></script>
+  <script defer src="js/midi.js?v=20261002g"></script>
+  <script defer src="js/app.js?v=20261002g"></script>
+</head>
+<body>
+  <a class="skip-link" href="#canvas">Skip to drawing area</a>
+
+  <header class="nav">
+    <div class="logo">
+      <svg viewBox="0 0 28 28" aria-hidden="true"><rect width="28" height="28" rx="8" class="logo-bg"/><path d="M5 17c3 0 3-7 6-7s3 9 6 9 3-6 6-6" class="logo-line"/></svg>
+      <span>Sketchtone</span>
+    </div>
+    <label class="sr-only" for="project-name">Project name</label>
+    <input id="project-name" class="project-name" type="text" autocomplete="off" spellcheck="false" maxlength="60">
+    <button id="midi-btn" class="btn midi-btn" type="button" aria-haspopup="dialog">
+      <span class="midi-dot" aria-hidden="true"></span><span id="midi-label">Connect MIDI</span>
+    </button>
+    <button id="settings-btn" class="icon-btn" type="button" aria-haspopup="dialog" aria-label="Settings, project and export" title="Settings, project and export">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+    </button>
+    <button id="theme-btn" class="icon-btn theme-btn" type="button" aria-pressed="false" aria-label="Dark mode" title="Dark mode">
+      <svg class="theme-sun" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+      <svg class="theme-moon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    </button>
+    <button id="new-project" class="btn" type="button">New</button>
+  </header>
+
+  <main class="workspace">
+    <section class="canvas-card card" aria-labelledby="draw-title">
+      <h1 id="draw-title" class="sr-only">Sketchtone: draw lines to make sound</h1>
+      <div class="toolbar" role="group" aria-label="Drawing tools">
+        <div class="toolbox" id="toolbox" role="radiogroup" aria-label="Drawing tool"></div>
+        <div class="seg" role="radiogroup" aria-label="Line loudness">
+          <label><input type="radio" name="brush" value="s"><span><i class="thick thick-s" aria-hidden="true"></i>Quiet</span></label>
+          <label><input type="radio" name="brush" value="m" checked><span><i class="thick thick-m" aria-hidden="true"></i>Medium</span></label>
+          <label><input type="radio" name="brush" value="l"><span><i class="thick thick-l" aria-hidden="true"></i>Loud</span></label>
+        </div>
+        <div class="seg fill-seg" id="fill-seg" role="radiogroup" aria-label="Shape style" hidden>
+          <label title="Outline (F)"><input type="radio" name="fill" value="outline" checked><span><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="7" width="14" height="10" fill="none" stroke="currentColor" stroke-width="2"/></svg>Outline</span></label>
+          <label title="Filled (F)"><input type="radio" name="fill" value="filled"><span><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="7" width="14" height="10" fill="currentColor" stroke="currentColor" stroke-width="2"/></svg>Filled</span></label>
+        </div>
+        <div class="seg voice-seg" id="voice-seg" role="radiogroup" aria-label="Voice" hidden>
+          <label title="Low voice"><input type="radio" name="voice" value="low"><span>Low voice</span></label>
+          <label title="Middle voice"><input type="radio" name="voice" value="mid" checked><span>Mid</span></label>
+          <label title="High voice"><input type="radio" name="voice" value="high"><span>High</span></label>
+        </div>
+        <button type="button" class="btn btn-small etch-toggle" id="etch-toggle" aria-pressed="false" aria-controls="etch-bar" title="Draw with two knobs, like the red toy">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="7.5" cy="16" r="1.8" fill="currentColor"/><circle cx="16.5" cy="16" r="1.8" fill="currentColor"/><path d="M7 11l3-3 3 2 4-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Etch mode
+        </button>
+        <button type="button" class="btn btn-small pattern-toggle" id="pattern-toggle" aria-pressed="false" aria-controls="pattern-bar" title="Generate repeating patterns and ready-made lines">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h3M10 7h3M16 7h4M4 12h5M12 12h3M18 12h2M4 17h2M9 17h4M16 17h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          Patterns
+        </button>
+        <span class="toolbar-spacer"></span>
+        <button type="button" class="icon-btn" id="undo" aria-label="Undo" title="Undo (Ctrl/⌘ Z)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14L4 9l5-5M4 9h10.5a5.5 5.5 0 0 1 0 11H11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <button type="button" class="icon-btn" id="redo" aria-label="Redo" title="Redo (Shift Ctrl/⌘ Z)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 14l5-5-5-5M20 9H9.5a5.5 5.5 0 0 0 0 11H13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <button type="button" class="btn btn-small" id="clear-layer">Clear layer</button>
+      </div>
+
+      <div class="knob-strip canvas-strip" id="knob-strip" hidden>
+        <span class="ks-page"><span class="ks-kicker">Knobs shape</span> <b id="ks-page"></b></span>
+        <ol class="ks-list" id="ks-list" aria-label="What each controller knob does to the drawing"></ol>
+      </div>
+      <div class="pattern-bar" id="pattern-bar" role="region" aria-label="Pattern generator" hidden></div>
+      <div class="canvas-wrap">
+        <canvas id="canvas" tabindex="0" role="application" aria-roledescription="drawing area"
+                aria-label="Drawing area" aria-describedby="canvas-help"></canvas>
+        <div class="tool-hint" id="tool-hint" aria-hidden="true"></div>
+        <input type="text" id="text-entry" class="text-entry" maxlength="60" autocomplete="off" spellcheck="false" placeholder="Type words, then Enter" aria-label="Words to sing. Enter places them, Escape cancels." hidden>
+        <div class="keyfx-badge" id="keyfx-badge" role="status" hidden></div>
+        <div class="empty-hint" id="empty-hint">
+          <p class="empty-title">Draw a line to make a sound</p>
+          <p>Left to right is time. Higher up is a higher note. Thicker lines play louder. Try the shapes and the spray too.</p>
+        </div>
+      </div>
+      <div class="etch-bar" id="etch-bar" role="group" aria-label="Etch mode knobs" hidden>
+        <div class="etch-knob" id="etch-x"></div>
+        <div class="etch-mid">
+          <span class="etch-logo">Etch mode</span>
+          <div class="etch-actions">
+            <button type="button" class="etch-btn" id="etch-lift">New line</button>
+            <button type="button" class="etch-btn" id="etch-shake">Shake to clear</button>
+          </div>
+        </div>
+        <div class="etch-knob" id="etch-y"></div>
+      </div>
+      <p id="canvas-help" class="sr-only">
+        Left to right is time, top to bottom is pitch from high to low.
+        With the keyboard: arrow keys move the pen, hold Shift to move faster,
+        Space or Enter starts and finishes a line, Escape cancels it.
+      </p>
+      <div class="timeline" id="timeline" role="slider" tabindex="0" aria-label="Start position" aria-valuemin="0">
+        <canvas id="timeline-canvas" aria-hidden="true"></canvas>
+      </div>
+    </section>
+
+    <div class="rail">
+      <section class="record card" aria-labelledby="record-title">
+        <h2 id="record-title" class="sr-only">Transport and recording</h2>
+        <div class="transport">
+          <button type="button" id="play" class="play-btn" aria-keyshortcuts="Space"></button>
+          <button type="button" id="stop" class="icon-btn stop-btn" aria-label="Stop and go back to start" title="Stop">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>
+          </button>
+          <div class="readout" id="readout" aria-hidden="true"></div>
+        </div>
+        <div class="transport-row">
+          <div class="bpm" role="group" aria-labelledby="bpm-label">
+            <button type="button" class="step-btn-light" id="bpm-down" aria-label="Slower">−</button>
+            <input type="number" id="bpm" min="40" max="240" step="1" inputmode="numeric">
+            <span id="bpm-label">BPM</span>
+            <button type="button" class="step-btn-light" id="bpm-up" aria-label="Faster">+</button>
+          </div>
+          <label class="select-label">
+            <span class="sr-only">Pitch mode</span>
+            <select id="scale"></select>
+          </label>
+        </div>
+        <div class="transport-row">
+          <label class="check"><input type="checkbox" id="loop" checked>Loop</label>
+          <label class="select-label">
+            <span class="sr-only">Loop length</span>
+            <select id="bars">
+              <option value="1">1 bar</option>
+              <option value="2">2 bars</option>
+              <option value="4">4 bars</option>
+              <option value="8">8 bars</option>
+            </select>
+          </label>
+        </div>
+        <div class="record-actions">
+          <button type="button" id="hear" class="icon-btn hear-btn" aria-pressed="true" aria-label="Hear while drawing" title="Hear while drawing">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4z" fill="currentColor"/><path class="hear-waves" d="M16 9a4 4 0 0 1 0 6M18.5 6.5a7.5 7.5 0 0 1 0 11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path class="hear-off" d="M16 9.5l5 5M21 9.5l-5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          </button>
+          <button type="button" id="record" class="rec-btn" aria-pressed="false">
+            <span class="rec-dot" aria-hidden="true"></span><span class="rec-label">Record</span>
+          </button>
+          <button type="button" id="export" class="btn export-btn">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span>Export</span>
+          </button>
+        </div>
+        <p id="status" class="status" role="status"></p>
+      </section>
+      <aside class="side card" aria-label="Layers and timeline">
+        <div class="tabs" role="tablist" aria-label="Side panel">
+          <button type="button" role="tab" class="tab" id="tab-layers" aria-controls="pane-layers" aria-selected="true">Layers</button>
+          <button type="button" role="tab" class="tab" id="tab-timeline" aria-controls="pane-timeline" aria-selected="false" tabindex="-1">Timeline</button>
+          <button type="button" role="tab" class="tab" id="tab-keys" aria-controls="pane-keys" aria-selected="false" tabindex="-1">Keys</button>
+        </div>
+
+        <div class="pane" id="pane-layers" role="tabpanel" aria-labelledby="tab-layers">
+          <div class="pane-head">
+            <p class="pane-note">Pick a layer, then draw. Each has its own sound.</p>
+            <button type="button" class="btn btn-small" id="add-layer">+ Add</button>
+          </div>
+          <ul id="layer-list" class="layer-list"></ul>
+          <details class="help">
+            <summary>Keyboard shortcuts</summary>
+            <dl>
+              <dt>Space</dt><dd>Play or pause</dd>
+              <dt>Ctrl/⌘ Z</dt><dd>Undo (add Shift to redo)</dd>
+              <dt>Arrows on drawing area</dt><dd>Move the pen</dd>
+              <dt>Space on drawing area</dt><dd>Start or finish a line</dd>
+              <dt>V P L R O S E</dt><dd>Select, Pencil, Line, Rectangle, Ellipse, Spray, Eraser</dd>
+              <dt>Delete</dt><dd>Remove the selected line</dd>
+              <dt>F</dt><dd>Shapes: outline or filled</dd>
+              <dt>Arrows on a knob</dt><dd>Turn it (Shift for bigger steps)</dd>
+              <dt>Escape</dt><dd>Close the sound panel</dd>
+            </dl>
+          </details>
+        </div>
+
+        <div class="pane" id="pane-timeline" role="tabpanel" aria-labelledby="tab-timeline" hidden>
+          <div class="read-box">
+            <p class="kicker">Timeline</p>
+            <h2 class="read-title">Reading</h2>
+            <div class="read-inner">
+              <div class="read-head">
+                <span>Reading · <b id="read-layer"></b></span>
+                <span class="read-mode-name" id="read-mode-name"></span>
+              </div>
+              <div class="read-modes" id="read-modes" role="radiogroup" aria-label="Read mode"></div>
+              <p class="read-desc" id="read-desc"></p>
+              <div class="read-row">
+                <span class="read-label" id="div-label">Divisions</span>
+                <div class="seg seg-dev seg-small" id="divisions" role="radiogroup" aria-labelledby="div-label"></div>
+                <button type="button" class="dev-btn" id="reshuffle">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h3l10 10h3M4 17h3l3-3M14 10l3-3h3M18 4l3 3-3 3M18 14l3 3-3 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  Reshuffle
+                </button>
+              </div>
+              <div class="slice-wrap">
+                <p class="read-label" id="slice-label">Slice order</p>
+                <ol class="slice-map" id="slice-map" aria-labelledby="slice-label"></ol>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="pane" id="pane-keys" role="tabpanel" aria-labelledby="tab-keys" hidden>
+          <div class="read-box">
+            <p class="kicker">Keyboard</p>
+            <h2 class="read-title">FX keys</h2>
+            <p class="keys-intro">Save FX on a key, then hold that key on your MPK: every layer plays with those FX until you let go.</p>
+            <div class="piano" id="piano" role="group" aria-label="Keys"></div>
+            <div class="oct-row">
+              <button type="button" class="dev-btn" id="oct-down" aria-label="Octave down">−</button>
+              <span id="oct-label"></span>
+              <button type="button" class="dev-btn" id="oct-up" aria-label="Octave up">+</button>
+            </div>
+            <div class="read-inner key-detail">
+              <h3 class="key-title" id="key-title"></h3>
+              <p class="read-desc" id="key-fx"></p>
+              <div class="key-actions">
+                <button type="button" class="dev-btn" id="key-save"></button>
+                <button type="button" class="dev-btn" id="key-try">Hold to try</button>
+                <button type="button" class="dev-btn" id="key-clear">Clear</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <section class="drum-card card" id="drum-card" aria-labelledby="drum-title">
+      <div class="drum-head">
+        <h2 id="drum-title">Drums</h2>
+        <div class="seg seg-small" role="radiogroup" aria-label="Energy pen">
+          <label><input type="radio" name="drumtool" value="draw" checked><span>Draw energy</span></label>
+          <label><input type="radio" name="drumtool" value="gap"><span>Gap</span></label>
+        </div>
+        <button type="button" class="btn btn-small" id="drum-flat">Flat line</button>
+        <button type="button" class="btn btn-small" id="drum-dice" title="Same knobs, new groove">Roll dice</button>
+        <button type="button" class="btn btn-small" id="drum-keep" title="Keep this groove, then blend back to it with Morph">Keep groove</button>
+        <button type="button" class="btn btn-small" id="drum-clear">Clear</button>
+        <span class="toolbar-spacer"></span>
+        <button type="button" class="btn btn-small drum-mpk" id="drum-mpk" aria-pressed="false" title="Turn K1 to K8 on your controller into the drum knobs">MPK knobs: drums</button>
+        <label class="check"><input type="checkbox" id="drum-on" checked>Drums on</label>
+        <button type="button" class="icon-btn" id="drum-toggle" aria-expanded="true" aria-controls="drum-body" aria-label="Show drums" title="Hide drums">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+      <div class="drum-body" id="drum-body">
+        <div class="drum-wrap">
+          <canvas id="drum-canvas" tabindex="0" role="application" aria-roledescription="drum energy" aria-label="Drum energy line" aria-describedby="drum-help"></canvas>
+          <div class="drum-empty" id="drum-empty">Draw the red energy line: high = busy drums, low = sparse, a gap = silence. Or tap a style below.</div>
+        </div>
+        <p id="drum-help" class="sr-only">Left to right is time, as on the canvas. The red line is the drum energy: higher means busier drums. Parts with no line are silent. The dots are the hits the drummer generates. With the keyboard: Left and Right arrows move one step, Up and Down raise or lower the energy there, Delete makes a gap, Space puts the line back.</p>
+        <div class="drum-styles tiles" id="drum-styles" role="group" aria-label="Styles: set all drum knobs at once"></div>
+        <div class="drum-controls">
+          <div class="drum-groove" id="drum-macros" role="group" aria-label="Generate"></div>
+          <div class="drum-groove drum-feel" id="drum-feel" role="group" aria-label="Feel"></div>
+        </div>
+      </div>
+    </section>
+
+
+    <section class="quick card" id="quick" aria-labelledby="quick-title">
+      <h2 id="quick-title" class="sr-only">Sound design for the selected layer</h2>
+      <div class="qa-cards" id="qa-cards"></div>
+      <div class="device" id="panel" role="region" aria-labelledby="panel-title" hidden></div>
+    </section>
+
+  </main>
+
+  <div id="live" class="sr-only" aria-live="polite"></div>
+
+  <div class="knob-hud" id="knob-hud" aria-hidden="true">
+    <span class="hud-k" id="hud-k"></span>
+    <span class="hud-label" id="hud-label"></span>
+    <span class="hud-value" id="hud-value"></span>
+    <span class="hud-bar"><i id="hud-bar"></i></span>
+  </div>
+
+  <dialog class="app-dialog" id="app-dialog" aria-labelledby="ad-title">
+    <div class="ad-shell">
+      <nav class="ad-side" aria-label="Settings sections">
+        <h2 class="ad-title" id="ad-title">Sketchtone</h2>
+        <div class="ad-tabs" role="tablist" aria-orientation="vertical" aria-labelledby="ad-title">
+          <button type="button" role="tab" class="ad-tab" id="adt-project" aria-controls="adp-project" aria-selected="true">Project</button>
+          <button type="button" role="tab" class="ad-tab" id="adt-export" aria-controls="adp-export" aria-selected="false" tabindex="-1">Export</button>
+          <button type="button" role="tab" class="ad-tab" id="adt-settings" aria-controls="adp-settings" aria-selected="false" tabindex="-1">Settings</button>
+          <button type="button" role="tab" class="ad-tab" id="adt-privacy" aria-controls="adp-privacy" aria-selected="false" tabindex="-1">Privacy</button>
+          <button type="button" role="tab" class="ad-tab" id="adt-credits" aria-controls="adp-credits" aria-selected="false" tabindex="-1">Credits</button>
+        </div>
+        <p class="ad-version" id="ad-version"></p>
+      </nav>
+      <div class="ad-main">
+        <button type="button" class="icon-btn ad-close" id="ad-close" aria-label="Close">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+
+        <section class="ad-pane" id="adp-project" role="tabpanel" aria-labelledby="adt-project">
+          <h3>Project</h3>
+          <p class="ad-lead">Your sketch saves itself in this browser while you work. Keep versions to go back in time, or a file to back up and share.</p>
+          <div class="ad-card">
+            <label class="ad-field"><span>Name</span><input type="text" id="ad-name" maxlength="60" autocomplete="off"></label>
+            <p class="ad-meta" id="ad-summary"></p>
+          </div>
+          <div class="ad-card">
+            <h4>Versions</h4>
+            <div class="ad-row">
+              <input type="text" id="ad-version-name" maxlength="40" placeholder="Name this version (optional)" aria-label="Version name">
+              <button type="button" class="btn btn-small" id="ad-save-version">Save version</button>
+            </div>
+            <ul class="ad-list" id="ad-versions"></ul>
+          </div>
+          <div class="ad-card">
+            <h4>Project file</h4>
+            <p class="ad-meta">A .sketchtone file holds the whole sketch: drawing, sounds, effects, drums and settings.</p>
+            <div class="ad-row">
+              <button type="button" class="btn btn-small" id="ad-download">Download project file</button>
+              <button type="button" class="btn btn-small" id="ad-open">Open project file…</button>
+              <input type="file" id="ad-file" accept=".sketchtone,.json,application/json" hidden>
+            </div>
+          </div>
+        </section>
+
+        <section class="ad-pane" id="adp-export" role="tabpanel" aria-labelledby="adt-export" hidden>
+          <h3>Export</h3>
+          <p class="ad-lead">Render the loop to a WAV file as long as you want, with the project as it is now: BPM, layers, mutes, effects, voice and drums. It renders faster than real time, no recording needed.</p>
+          <div class="ad-card">
+            <fieldset class="ad-fieldset">
+              <legend>Length</legend>
+              <div class="chips" id="ad-lengths" role="group" aria-label="Quick lengths"></div>
+              <label class="ad-inline">or <input type="number" id="ad-minutes" min="0.1" max="10" step="0.1" inputmode="decimal"> minutes</label>
+            </fieldset>
+            <label class="ad-field ad-field-row"><span>Ending</span>
+              <select id="ad-fade">
+                <option value="0">Let it ring out</option>
+                <option value="2">Fade out over 2 s</option>
+                <option value="5" selected>Fade out over 5 s</option>
+                <option value="10">Fade out over 10 s</option>
+              </select>
+            </label>
+            <p class="ad-meta" id="ad-export-info"></p>
+            <div class="ad-row">
+              <button type="button" class="btn ad-primary" id="ad-export">Export WAV</button>
+              <progress id="ad-progress" max="1" value="0" hidden></progress>
+              <span class="ad-meta" id="ad-export-status" role="status"></span>
+            </div>
+          </div>
+          <p class="ad-note">Record, in the transport, still captures what you play live, knob moves included.</p>
+        </section>
+
+        <section class="ad-pane" id="adp-settings" role="tabpanel" aria-labelledby="adt-settings" hidden>
+          <h3>Settings</h3>
+          <div class="ad-card">
+            <div class="ad-field ad-field-row"><span id="ad-theme-label">Look</span>
+              <div class="seg" role="radiogroup" aria-labelledby="ad-theme-label">
+                <label><input type="radio" name="ad-theme" value="light"><span>Light</span></label>
+                <label><input type="radio" name="ad-theme" value="dark"><span>Dark</span></label>
+              </div>
+            </div>
+            <label class="ad-field ad-field-row"><span>Speaker volume</span><input type="range" id="ad-volume" min="0" max="100" step="1"></label>
+            <label class="check"><input type="checkbox" id="ad-hear">Hear lines while drawing</label>
+            <label class="check"><input type="checkbox" id="ad-motion">Reduce motion (no shaking, no animations)</label>
+          </div>
+          <div class="ad-card">
+            <h4>Controller</h4>
+            <p class="ad-meta">Connect a MIDI keyboard like the Akai MPK Mini and map its knobs.</p>
+            <button type="button" class="btn btn-small" id="ad-midi">MIDI setup…</button>
+          </div>
+          <div class="ad-card ad-danger">
+            <h4>Saved data</h4>
+            <p class="ad-meta">Remove the sketch, versions, MIDI setup and settings from this browser. Download a project file first if you want to keep your work.</p>
+            <button type="button" class="btn btn-small" id="ad-wipe">Delete all saved data</button>
+          </div>
+        </section>
+
+        <section class="ad-pane" id="adp-privacy" role="tabpanel" aria-labelledby="adt-privacy" hidden>
+          <h3>Privacy</h3>
+          <ul class="ad-points">
+            <li><b>Your work stays on your device.</b> Drawings, versions and settings are kept in this browser's local storage. No account, no cookies, no analytics, no tracking.</li>
+            <li><b>Sound files are made in your browser.</b> Exports and recordings are created on your computer and saved straight to it. Nothing is uploaded.</li>
+            <li><b>MIDI only when you ask.</b> The browser asks for MIDI access when you press Connect MIDI. Sketchtone only reads your controller.</li>
+            <li><b>No microphone, no camera.</b></li>
+            <li><b>Fonts.</b> The Inter typeface loads from Google Fonts, so Google receives your IP address when the page opens.</li>
+            <li><b>Hosting.</b> The site is served by Netlify, which may keep standard server logs (such as IP address and pages requested).</li>
+            <li><b>Delete anytime.</b> Settings → Delete all saved data removes everything Sketchtone stored in this browser.</li>
+          </ul>
+        </section>
+
+        <section class="ad-pane" id="adp-credits" role="tabpanel" aria-labelledby="adt-credits" hidden>
+          <h3>Credits</h3>
+          <p class="ad-lead">Sketchtone: draw lines, hear music. Made for people who are not music producers.</p>
+          <div class="ad-card">
+            <dl class="ad-credits">
+              <dt>Idea and design</dt><dd>Alessio Marcone</dd>
+              <dt>Built with</dt><dd>Claude Code by Anthropic</dd>
+              <dt>Sound</dt><dd>Web Audio API: every sound, drum and voice is synthesized live, no samples</dd>
+              <dt>Controllers</dt><dd>Web MIDI API, tuned for the Akai MPK Mini</dd>
+              <dt>Type</dt><dd>Inter by Rasmus Andersson (SIL Open Font License)</dd>
+              <dt>Inspired by</dt><dd>90s paint programs, the two-knob drawing toy, and the robot voices of 90s talking software</dd>
+            </dl>
+          </div>
+          <p class="ad-meta"><a id="ad-source" href="https://github.com/alessiomarcone/sketchtone" target="_blank" rel="noopener">Source code on GitHub</a></p>
+        </section>
+      </div>
+    </div>
+  </dialog>
+  <dialog class="midi-dialog" id="midi-dialog" aria-labelledby="midi-title">
+    <form method="dialog" class="md-form">
+      <div class="md-head">
+        <h2 id="midi-title">MIDI knobs</h2>
+        <button class="icon-btn" value="close" aria-label="Close">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <p class="md-status" id="md-status" role="status"></p>
+      <p class="md-monitor" id="md-monitor">Last message: none yet. Turn a knob to see what it sends.</p>
+
+      <section class="md-sec" aria-labelledby="md-setup-title">
+        <h3 id="md-setup-title">Teach the app your knobs</h3>
+        <p class="md-hint">Only needed once. Press Start, then turn each knob a little, from K1 to K8 in order.</p>
+        <ol class="md-setup" id="md-setup"></ol>
+        <button type="button" class="btn btn-small" id="md-setup-btn">Start setup</button>
+      </section>
+
+      <fieldset class="md-sec">
+        <legend>How knobs respond</legend>
+        <label class="md-radio"><input type="radio" name="md-mode" value="smooth"><span><b>Smooth</b> Turning moves the setting from where it is. No jumps when you switch page.</span></label>
+        <label class="md-radio"><input type="radio" name="md-mode" value="jump"><span><b>Jump</b> The setting follows the knob position exactly.</span></label>
+        <label class="md-radio"><input type="radio" name="md-mode" value="relative"><span><b>Relative</b> For endless knobs set to relative mode in the controller editor.</span></label>
+      </fieldset>
+
+      <fieldset class="md-sec">
+        <legend>Speed</legend>
+        <div class="seg">
+          <label><input type="radio" name="md-speed" value="0.5"><span>Fine</span></label>
+          <label><input type="radio" name="md-speed" value="1"><span>Normal</span></label>
+          <label><input type="radio" name="md-speed" value="2"><span>Fast</span></label>
+        </div>
+      </fieldset>
+
+      <section class="md-sec" aria-labelledby="md-pads-title">
+        <h3 id="md-pads-title">Pads</h3>
+        <p class="md-hint">Pads jump the loop to one of 8 slices. They work out of the box on the MPK Mini. If a pad acts like a key instead, press Start, then hit pads 1 to 8 in order.</p>
+        <ol class="md-setup" id="md-pads"></ol>
+        <button type="button" class="btn btn-small" id="md-pads-btn">Start pad setup</button>
+      </section>
+
+      <section class="md-sec" aria-labelledby="md-pins-title">
+        <h3 id="md-pins-title">Pinned knobs</h3>
+        <p class="md-hint">Knobs shape the drawing. A pinned knob controls a sound setting instead. To pin: focus a knob on screen and press <kbd>L</kbd> (or Alt-click it), then turn a controller knob.</p>
+        <ul class="md-pins" id="md-pins"></ul>
+      </section>
+
+      <div class="md-foot"><button class="btn" value="close">Done</button></div>
+    </form>
+  </dialog>
+</body>
+</html>

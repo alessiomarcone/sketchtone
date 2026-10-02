@@ -1,0 +1,12 @@
+# Sketchtone is static: no install, no bundler. The build step only copies the
+# app files into dist/, so the README, docs and git data are never published.
+[build]
+  command = "rm -rf dist && mkdir dist && cp -R index.html styles.css js dist/"
+  publish = "dist"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=(), midi=(self)"
