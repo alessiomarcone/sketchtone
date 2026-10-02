@@ -66,3 +66,7 @@ The repository includes `netlify.toml`: connect the repository to Netlify and it
 ## Credits
 
 Idea and design by Alessio Marcone. Built with [Claude Code](https://claude.com/claude-code). All sounds are synthesized live with the Web Audio API. Type: [Inter](https://rsms.me/inter/) by Rasmus Andersson.
+
+## License
+
+[MIT](LICENSE) © 2026 Alessio Marcone
