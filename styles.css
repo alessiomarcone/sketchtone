@@ -931,3 +931,12 @@ kbd {
   .pb-knobs .knob-ctl { width: 25%; }
   .pattern-bar { padding: var(--s3); }
 }
+
+/* ---------- save status, metronome ---------- */
+.save-status { min-width: 60px; font-size: var(--fs-sm); color: var(--ink-3); white-space: nowrap; }
+.save-status[data-state="saved"]::before { content: "✓ "; color: var(--ok); }
+.save-status[data-state="error"] { color: var(--danger); font-weight: 600; white-space: normal; }
+.metro-btn { gap: 6px; }
+.metro-btn svg { width: 16px; height: 16px; }
+.metro-btn[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+@media (max-width: 520px) { .save-status { order: 6; } }

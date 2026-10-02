@@ -116,9 +116,15 @@
   let project = wantsDemo && !(saved && saved.layers.some(l => l.strokes.length)) ? normalize(demoProject()) : saved || newProject();
   const engine = new Engine(() => project);
   let saveTimer = 0;
-  const persist = () => { try { localStorage.setItem(STORE, JSON.stringify(project)); } catch (e) { /* storage unavailable */ } };
+  // Autosave, with a visible status so you always know your work is safe.
+  const saveStatus = $('#save-status');
+  const setSaveStatus = (state, text) => { saveStatus.dataset.state = state; saveStatus.textContent = text; };
+  const persist = () => {
+    try { localStorage.setItem(STORE, JSON.stringify(project)); setSaveStatus('saved', 'Saved'); }
+    catch (e) { setSaveStatus('error', 'Not saved: browser storage is full or blocked'); }
+  };
   // Every change goes through save(), so it is also where cached note plans are dropped.
-  const save = () => { engine.invalidate(); clearTimeout(saveTimer); saveTimer = setTimeout(persist, 300); };
+  const save = () => { engine.invalidate(); clearTimeout(saveTimer); setSaveStatus('saving', 'Saving…'); saveTimer = setTimeout(persist, 300); };
 
   const ui = {
     tool: 'pencil', brush: 'm', fill: false, voice: 'mid', textEntry: null,
@@ -1992,9 +1998,13 @@
     updateTransport();
     requestRender();
   }
-  function stopAll() {
+  function stopAll() { // the panic button: everything silent, nothing left held
     stopRecording();
     engine.stop();
+    engine.monitorEnd();
+    engine.setBend(0);
+    ui.held = [];
+    applyHeld(); // drops any key FX at once (nothing is playing, so no beat to wait for)
     ui.pausedAt = null;
     updateTransport();
     updateReadout(ui.startPos);
@@ -2045,6 +2055,17 @@
     announce(project.scale === 'theremin' ? 'Theremin: pitch follows your line exactly' : `Notes snap to the ${project.scale} scale`);
   });
   $('#loop').addEventListener('change', e => { project.loop = e.target.checked; save(); });
+  const metroBtn = $('#metro');
+  function setMetronome(on) {
+    engine.metronome = on;
+    metroBtn.setAttribute('aria-pressed', String(on));
+    prefs.metronome = on;
+    writeJSON(PREFS_KEY, prefs);
+  }
+  metroBtn.addEventListener('click', () => {
+    setMetronome(!engine.metronome);
+    announce(engine.metronome ? 'Metronome on' : 'Metronome off');
+  });
   $('#bars').addEventListener('change', e => {
     const p = engine.position();
     project.bars = Number(e.target.value);
@@ -3326,11 +3347,11 @@
   // One list drives both the key handler below and the shortcuts popup (press ?).
   const MOD = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl';
   const SHORTCUTS = [
-    ['Play', [['Space', 'Play or pause'], ['Shift Space', 'Play or pause, even on the canvas'], ['Home', 'Stop and go back to the start'],
-      ['+  −', 'Faster or slower (Shift: by 10 BPM)'], ['Shift L', 'Loop on or off'], ['Shift R', 'Record on or off'], ['H', 'Hear lines while drawing']]],
+    ['Play', [['Space', 'Play or pause'], ['Shift Space', 'Play or pause, even on the canvas'], ['Home', 'Stop all sound, back to the start'],
+      ['+  −', 'Faster or slower (Shift: by 10 BPM)'], ['Shift L', 'Loop on or off'], ['Shift R', 'Record on or off'], ['C', 'Metronome on or off'], ['H', 'Hear lines while drawing']]],
     ['Draw', [['V P L R O T S E', 'Select, Pencil, Line, Rectangle, Ellipse, Text, Spray, Eraser'], ['F', 'Shapes: outline or filled'],
       ['[  ]', 'Quieter or louder lines'], ['G', 'Patterns'], ['Arrows', 'Move the pen on the canvas'], ['Space', 'Start or finish a line on the canvas'], ['Esc', 'Cancel, or deselect']]],
-    ['Edit', [[`${MOD} Z`, 'Undo'], [`Shift ${MOD} Z`, 'Redo'], [`${MOD} D`, 'Duplicate the selected line'], ['Alt arrows', 'Nudge the selected line (Shift: bigger steps)'],
+    ['Edit', [[`${MOD} Z`, 'Undo'], [`Shift ${MOD} Z`, 'Redo'], [`${MOD} C`, 'Copy the selected line'], [`${MOD} V`, 'Paste it on the picked layer'], [`${MOD} D`, 'Duplicate the selected line'], ['Alt arrows', 'Nudge the selected line (Shift: bigger steps)'],
       ['Delete', 'Remove the selected line'], ['Double-click', 'Change the words of a text']]],
     ['Layers', [['1 … 8', 'Pick a layer'], ['D', 'Pick the drum layer'], ['N', 'New layer'], ['M', 'Mute the picked layer'], ['Shift S', 'Solo the picked layer']]],
     ['Windows', [['?', 'These shortcuts'], [`${MOD} ,`, 'Settings'], [`${MOD} S`, 'Save a version'], [`${MOD} E`, 'Export'], ['K', 'MIDI setup']]],
@@ -3371,6 +3392,25 @@
     renderKnobStrip();
     announce('Duplicated, one beat later');
   }
+  let clipboard = null;
+  function copySelected() {
+    const s = selected();
+    if (!s) { announce('Select a line first, then copy it'); return; }
+    clipboard = JSON.parse(JSON.stringify(s.item));
+    announce('Copied. Pick any layer and paste.');
+  }
+  function pasteClipboard() {
+    if (!clipboard) { announce('Nothing copied yet'); return; }
+    const layer = current();
+    unhideForDrawing();
+    snapshot();
+    const item = { ...JSON.parse(JSON.stringify(clipboard)), id: uid() };
+    layer.strokes.push(item);
+    ui.sel = { layerId: layer.id, id: item.id };
+    refreshAfterEdit();
+    renderKnobStrip();
+    announce(`Pasted on ${layer.name}`);
+  }
   function toggleLayerFlag(flag) {
     if (ui.drumSel) { drumRowAct(flag === 'muted' ? 'mute' : 'solo'); return; }
     const l = current();
@@ -3397,6 +3437,12 @@
     } else if (mod && k === 'd' && !typing) {
       e.preventDefault();
       duplicateSelected();
+    } else if (mod && k === 'c' && !typing && selected() && !window.getSelection().toString()) {
+      e.preventDefault();
+      copySelected();
+    } else if (mod && k === 'v' && !typing && clipboard) {
+      e.preventDefault();
+      pasteClipboard();
     } else if (mod && k === 's') {
       e.preventDefault();
       if (saveVersion()) announce('Version saved. Find it in Settings, Project.'); else announce('Could not save a version: browser storage is full or blocked');
@@ -3461,6 +3507,8 @@
       setPatternOpen(true);
     } else if (k === 'k') {
       $('#midi-btn').click();
+    } else if (k === 'c') {
+      metroBtn.click();
     } else if (TOOLS.some(x => x.key === k) || k === 'f') {
       if (k === 'f') {
         setFill(!ui.fill);
@@ -3522,6 +3570,8 @@
 
   readTheme();
   applyPrefs();
+  setMetronome(!!prefs.metronome);
+  setSaveStatus('saved', hasMusic() ? 'Saved' : '');
   buildCards();
   buildEtchKnobs();
   buildDrumKnobs();

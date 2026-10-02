@@ -566,6 +566,22 @@
       if (this.ctx) this.master.output.gain.setTargetAtTime(v, this.ctx.currentTime, 0.03);
     }
 
+    // Metronome: straight to the speakers, so it is never recorded or exported.
+    scheduleClicks(project, k, L, u0, u1, ctxAt) {
+      const ctx = this.ctx, beat = 60 / project.bpm, base = k * L;
+      if (!this.clickOut) { this.clickOut = ctx.createGain(); this.clickOut.gain.value = 0.35; this.clickOut.connect(ctx.destination); }
+      for (let i = Math.ceil((Math.max(u0, base) - base) / beat - 1e-6); base + i * beat < Math.min(u1, base + L); i++) {
+        const t = ctxAt(base + i * beat), o = ctx.createOscillator(), g = ctx.createGain();
+        o.frequency.value = i % 4 === 0 ? 1600 : 1050; // the bar's first beat is higher
+        g.gain.setValueAtTime(0, t);
+        g.gain.linearRampToValueAtTime(i % 4 === 0 ? 1 : 0.6, t + 0.002);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+        o.connect(g).connect(this.clickOut);
+        o.start(t);
+        o.stop(t + 0.06);
+      }
+    }
+
     setBend(amount) { // -1..1, ±2 semitones
       const src = this.ctx && bendSources.get(this.ctx);
       if (src) src.offset.setTargetAtTime(amount * 200, this.ctx.currentTime, 0.01);
@@ -734,6 +750,7 @@
         }
         const d = project.drums;
         scheduleDrums(ctx, this.drumBus, this.drums(k), k, L, u0, u1, ctxAt, d.sound);
+        if (this.metronome) this.scheduleClicks(project, k, L, u0, u1, ctxAt);
         schedulePass(ctx, this.drumFx, d, project, [], k, L, u0, u1, ctxAt, null, this.fxOf(d)); // trance gate, tape stop
       }
     }
