@@ -1,7 +1,7 @@
 # Sketchtone is static: no install, no bundler. The build step only copies the
 # app files into dist/, so the README, docs and git data are never published.
 [build]
-  command = "rm -rf dist && mkdir dist && cp -R index.html styles.css js dist/"
+  command = "rm -rf dist && mkdir dist && cp -R index.html styles.css js fonts dist/"
   publish = "dist"
 
 [[headers]]
@@ -10,3 +10,6 @@
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
     Permissions-Policy = "camera=(), microphone=(), geolocation=(), midi=(self)"
+    # No third parties: scripts, styles, fonts and data come only from this site.
+    # blob: is the audio worklet (bitcrusher, gate) built in the page.
+    Content-Security-Policy = "default-src 'self'; script-src 'self' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; media-src 'self' blob:; connect-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"

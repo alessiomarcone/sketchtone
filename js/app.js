@@ -278,7 +278,6 @@
     }
     if (ui.pen) drawItem(ui.pen, sel.color, 1, false);
     if (ui.draft) drawItem(draftItem(ui.draft), sel.color, 0.85, false);
-    if (ui.patternOpen) for (const it of patternItems()) drawItem(it, sel.color, 0.38, false); // ghost preview
     if (ui.spray) drawItem(ui.spray.item, sel.color, 1, false);
     const picked = selected();
     if (picked && !picked.layer.hidden && !ui.pen && !ui.draft) drawSelection(picked.item);
@@ -549,6 +548,7 @@
     if (!m.moved) { snapshot(); m.moved = true; }
     replaceSelected(it => ({ ...it, tf: { ...m.tf0, dx: m.tf0.dx + p[0] - m.start[0], dy: m.tf0.dy + p[1] - m.start[1] } }));
     save();
+    syncLineBar();
     requestRender();
   }
 
@@ -572,7 +572,61 @@
       replaceSelected(it => ({ ...it, tf: { ...tfOf(it), [key]: v } }));
       save();
     }
+    syncLineBar();
     requestRender();
+  }
+
+  // Line controls: the drawing knobs on screen, always at hand (K1–K8 on the MPK).
+  const lineKnobs = {};
+  const isStyleDefault = () => !ui.brushTf.waves && !ui.brushTf.amp && !ui.brushTf.tilt && ui.brushTf.gain === 1;
+  function buildLineBar() {
+    const host = $('#line-bar');
+    host.innerHTML = `
+      <div class="lb-head">
+        <span class="lb-kicker" id="lb-title">Line</span>
+        <span class="lb-target" id="lb-target"></span>
+        <button type="button" class="dev-btn lb-reset" id="lb-reset">Reset</button>
+      </div>
+      <div class="lb-knobs"></div>`;
+    for (const d of DRAW_KNOBS) {
+      const sign = d.invert ? -1 : 1;
+      const k = createKnob({
+        label: d.label, min: d.min, max: d.max, step: d.step, value: sign * TF_IDENTITY[d.key], reset: sign * TF_IDENTITY[d.key], fmt: d.fmt,
+        hint: d.style ? 'Shapes the selected line, and the next lines you draw' : 'Shapes the selected line',
+        onInput: v => {
+          if (!selected() && !d.style) { announce('Select a line first (press V and click it), then turn this knob'); syncLineBar(); return; }
+          setDraw(d.key, sign * v, d.style);
+        },
+      });
+      k.el.dataset.path = `draw.${d.key}`;
+      lineKnobs[d.key] = k;
+      host.querySelector('.lb-knobs').append(k.el);
+    }
+    syncLineBar();
+    $('#lb-reset').addEventListener('click', () => {
+      const s = selected();
+      if (s) {
+        snapshot();
+        replaceSelected(it => { const { tf, ...rest } = it; return rest; });
+        save();
+        announce('Line back to how you drew it');
+      } else {
+        ui.brushTf = { waves: 0, amp: 0, tilt: 0, gain: 1 };
+        announce('New lines: no wiggle, no tilt, normal loudness');
+      }
+      syncLineBar();
+      requestRender();
+    });
+  }
+  function syncLineBar() {
+    if (!lineKnobs.dx) return;
+    const s = selected(), tf = s ? tfOf(s.item) : { ...TF_IDENTITY, ...ui.brushTf };
+    $('#lb-target').textContent = s ? `${toolOf(itemTool(s.item)).label} on ${s.layer.name}` : 'New lines · select one to move or stretch it';
+    for (const d of DRAW_KNOBS) {
+      lineKnobs[d.key].set((d.invert ? -1 : 1) * tf[d.key]);
+      lineKnobs[d.key].el.classList.toggle('is-idle', !s && !d.style);
+    }
+    $('#lb-reset').disabled = s ? !ST.hasTf(s.item) : isStyleDefault();
   }
 
   function drawSelection(it) {
@@ -857,6 +911,7 @@
   }
 
   canvas.addEventListener('keydown', e => {
+    if (e.altKey && e.key.startsWith('Arrow') && !ui.pen && !ui.draft) return; // nudge, handled globally
     const cur = ui.cursor;
     const dx = e.shiftKey ? 1 / 16 : 1 / 80, dy = e.shiftKey ? 4 / 36 : 1 / 36;
     const moves = { ArrowLeft: [-dx, 0], ArrowRight: [dx, 0], ArrowUp: [0, -dy], ArrowDown: [0, dy] };
@@ -948,15 +1003,13 @@
     const bar = $('#pattern-bar');
     bar.innerHTML = `
       <div class="pb-head">
-        <h2 class="pb-title">Patterns</h2>
-        <p class="pb-intro">Pick a preset or a motif, shape it, then add it to ${esc(current().name)}.</p>
-        <div class="pb-actions">
-          <button type="button" class="dev-btn" data-pb="dice" title="New random scatter (with Random above zero)">Roll dice</button>
-          <button type="button" class="dev-btn" data-pb="try">${ICON.play}Try</button>
-          <button type="button" class="btn btn-small pb-add" data-pb="add">Add to layer</button>
-          <button type="button" class="dev-btn" data-pb="close">Close</button>
-        </div>
+        <h2 class="pb-title" id="pb-title">Patterns</h2>
+        <p class="pb-intro">Pick a preset or a motif and shape it. The preview shows it over ${esc(current().name)}.</p>
+        <button type="button" class="icon-btn" data-pb="close" aria-label="Close patterns">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
       </div>
+      <canvas class="pb-preview" id="pb-preview" role="img" aria-label="Preview: the pattern drawn over the current layer"></canvas>
       <div class="pb-row">
         <span class="field-label" id="pb-presets">Presets</span>
         <div class="chips" role="group" aria-labelledby="pb-presets">${ST.PATTERN_PRESETS.map(pr =>
@@ -970,7 +1023,13 @@
         </div>
         <label class="check"><input type="checkbox" id="pb-mirror">Mirror every other</label>
       </div>
-      <div class="pb-knobs" role="group" aria-label="Pattern shape"></div>`;
+      <div class="pb-knobs" role="group" aria-label="Pattern shape"></div>
+      <div class="pb-foot">
+        <button type="button" class="dev-btn" data-pb="dice" title="New random scatter (turns Random on if it is off)">Roll dice</button>
+        <button type="button" class="dev-btn" data-pb="try">${ICON.play}Try</button>
+        <span class="toolbar-spacer"></span>
+        <button type="button" class="btn pb-add" data-pb="add">Add to layer</button>
+      </div>`;
     const host = bar.querySelector('.pb-knobs');
     for (const k of PATTERN_KNOBS) {
       const kn = createKnob({ ...k, value: k.key === 'y' ? 1 - ui.pattern.y : ui.pattern[k.key], reset: k.key === 'y' ? 0.5 : ST.PATTERN_DEFAULT[k.key],
@@ -990,6 +1049,40 @@
     $('#pb-mirror').checked = !!ui.pattern.mirror;
     const n = patternItems().reduce((a, it) => a + (it.dots ? it.dots.length : 1), 0);
     bar.querySelector('.pb-add').textContent = `Add ${n} to ${current().name}`;
+    drawPatternPreview();
+  }
+  // The pattern in the layer's colour over a faint copy of what the layer already has.
+  function drawPatternPreview() {
+    const cv = $('#pb-preview');
+    if (!cv) return;
+    const w = cv.clientWidth, h = cv.clientHeight, r = window.devicePixelRatio || 1, c = cv.getContext('2d'), layer = current();
+    if (!w || !h) return;
+    cv.width = Math.round(w * r);
+    cv.height = Math.round(h * r);
+    c.setTransform(r, 0, 0, r, 0, 0);
+    c.fillStyle = theme.paper;
+    c.fillRect(0, 0, w, h);
+    const beats = project.bars * 4;
+    for (let b = 1; b < beats; b++) {
+      c.fillStyle = b % 4 ? theme.grid : theme['grid-strong'];
+      c.fillRect(Math.round(b / beats * w), 0, 1, h);
+    }
+    const paint = (it, alpha) => {
+      const g = geom(it);
+      c.globalAlpha = alpha;
+      c.strokeStyle = c.fillStyle = layer.color;
+      c.lineWidth = 3;
+      c.lineCap = c.lineJoin = 'round';
+      if (g.dots) { for (const [x, y] of g.dots) { c.beginPath(); c.arc(x * w, y * h, 2.5, 0, Math.PI * 2); c.fill(); } return; }
+      const pts = g.points || g.poly;
+      c.beginPath();
+      pts.forEach(([x, y], i) => (i ? c.lineTo(x * w, y * h) : c.moveTo(x * w, y * h)));
+      if (pts.length === 1) c.lineTo(pts[0][0] * w + 0.5, pts[0][1] * h);
+      c.stroke();
+    };
+    for (const it of layer.strokes) paint(it, 0.18);
+    for (const it of patternItems()) paint(it, 0.95);
+    c.globalAlpha = 1;
   }
   function setPattern(key, value) {
     if (ui.pattern[key] === value) return;
@@ -997,16 +1090,21 @@
     syncPatternBar();
     requestRender();
   }
+  const patternDlg = $('#pattern-dialog');
   function setPatternOpen(open) {
+    if (open === ui.patternOpen) return;
     ui.patternOpen = open;
-    $('#pattern-bar').hidden = !open;
     $('#pattern-toggle').setAttribute('aria-pressed', String(open));
-    document.body.classList.toggle('pattern-open', open);
-    updateEmpty();
-    if (open) { buildPatternBar(); announce('Pattern generator open: the faint shapes on the canvas are a preview. Add puts them on the layer.'); }
+    if (open) {
+      buildPatternBar();
+      patternDlg.showModal();
+      requestAnimationFrame(drawPatternPreview); // the canvas has a size once the popup is open
+    } else if (patternDlg.open) patternDlg.close();
     renderKnobStrip();
-    requestRender();
   }
+  patternDlg.addEventListener('cancel', () => setPatternOpen(false)); // Esc, at once
+  patternDlg.addEventListener('close', () => setPatternOpen(false));
+  patternDlg.addEventListener('click', e => { if (e.target === patternDlg) setPatternOpen(false); });
   $('#pattern-toggle').addEventListener('click', () => setPatternOpen(!ui.patternOpen));
   $('#pattern-bar').addEventListener('change', e => {
     if (e.target.name === 'pmotif') { setPattern('motif', e.target.value); engine.audition(current(), patternItems().slice(0, 4), 1.2); }
@@ -1199,7 +1297,7 @@
   function renderLayers() {
     const focusKey = document.activeElement && document.activeElement.dataset.focusKey;
     layerList.innerHTML = project.layers.map(l => {
-      const sel = l.id === project.selected, name = esc(l.name), n = l.strokes.length;
+      const sel = !ui.drumSel && l.id === project.selected, name = esc(l.name), n = l.strokes.length;
       const mode = l.read.mode !== 'normal' ? ` · ${modeOf(l.read.mode).label}` : '';
       return `<li class="layer${sel ? ' is-selected' : ''}${l.muted ? ' is-muted' : ''}${l.hidden ? ' is-hidden' : ''}" style="--layer:${l.color}">
         <button type="button" class="layer-select" data-act="select" data-id="${l.id}" data-focus-key="select-${l.id}" aria-pressed="${sel}">
@@ -2418,7 +2516,10 @@
   function renderKnobStrip() {
     const on = midi.status.connected && midi.status.inputs.length > 0;
     document.body.classList.toggle('midi-on', on);
-    $('#knob-strip').hidden = !on;
+    // The line bar already shows K1–K8 for drawing; the strip is for the other knob modes.
+    const special = ui.drumMpk || ui.patternOpen || ui.etch.on || Object.keys(midi.settings.pins).length > 0;
+    $('#knob-strip').hidden = !on || !special;
+    syncLineBar();
     const targets = knobTargets();
     const picked = selected();
     $('#ks-page').textContent = ui.drumMpk ? 'Drum mode · K1–K8 generate the drums' : ui.patternOpen ? 'Pattern generator · K1–K8 shape the pattern' : ui.etch.on ? 'Etch mode · K1 time, K2 pitch' : picked ? `${toolOf(itemTool(picked.item)).label} on ${picked.layer.name}` : 'new lines';
@@ -2429,7 +2530,7 @@
     document.querySelectorAll('.k-badge').forEach(b => b.remove());
     targets.forEach((path, k) => {
       if (!path) return;
-      const el = document.querySelector(`#panel [data-path="${pathKey(path)}"], #drum-card [data-path="${pathKey(path)}"]`);
+      const el = document.querySelector(`#panel [data-path="${pathKey(path)}"], #drum-card [data-path="${pathKey(path)}"], #line-bar [data-path="${pathKey(path)}"]`);
       if (!el) return;
       const badge = document.createElement('span');
       badge.className = `k-badge${midi.settings.pins[k] ? ' is-pinned' : ''}`;
@@ -2587,20 +2688,47 @@
   const saveKeyFx = () => { try { localStorage.setItem(KEYFX_STORE, JSON.stringify(keyFx)); } catch (e) { /* storage unavailable */ } };
   const fxNames = fx => FX.filter(f => fx[f.id] && fx[f.id].on).map(f => f.label).join(', ') || 'dry, no effects';
 
+  // A key plays its own FX, or the default when it has none. The newest held key wins.
+  const fxForKey = n => (keyFx[n] || keyFx.default || null);
+  const keyLockPref = () => { try { return localStorage.getItem('sketchtone.keylock') || 'beat'; } catch (e) { return 'beat'; } };
+  let keyLock = keyLockPref(), keyTimer = 0;
+  // Seconds until the next beat or bar of the playing loop (0 when stopped or unlocked).
+  function untilBoundary() {
+    const pos = engine.position();
+    if (!pos || keyLock === 'off') return 0;
+    const unit = 60 / project.bpm * (keyLock === 'bar' ? 4 : 1);
+    const next = Math.ceil((pos.u + 0.004) / unit) * unit;
+    return next - pos.u;
+  }
   function applyHeld() {
-    const top = [...ui.held].reverse().find(n => keyFx[n]);
-    engine.setFxOverride(top != null ? keyFx[top].fx : null);
-    const badge = $('#keyfx-badge');
-    badge.hidden = top == null;
-    if (top != null) badge.textContent = `Key ${noteName(top)} FX: ${fxNames(keyFx[top].fx)}`;
+    const top = [...ui.held].reverse().find(n => fxForKey(n));
+    const fx = top != null ? fxForKey(top).fx : null;
+    const label = top != null ? `Key ${noteName(top)}${keyFx[top] ? '' : ' (default)'}: ${fxNames(fx)}` : '';
+    const badge = $('#keyfx-badge'), wait = untilBoundary();
+    clearTimeout(keyTimer);
+    const commit = () => {
+      engine.setFxOverride(fx);
+      badge.hidden = top == null;
+      badge.textContent = label;
+    };
+    if (wait > 0.01) { // lock to the grid: switch on the next beat or bar, timed by the audio clock
+      if (top != null) { badge.hidden = false; badge.textContent = `${label} · on the next ${keyLock}`; }
+      const ctx = engine.ctx, due = ctx.currentTime + wait;
+      const check = () => {
+        const left = due - ctx.currentTime;
+        if (left <= 0.004 || !engine.playing) commit();
+        else keyTimer = setTimeout(check, Math.max(1, Math.min(40, (left - 0.004) * 700)));
+      };
+      check();
+    } else commit();
     renderPiano();
   }
   function keyDown(note) {
     if (!ui.held.includes(note)) ui.held.push(note);
     ui.keySel = note;
     if (note < ui.keyBase || note > ui.keyBase + 24) ui.keyBase = Math.max(0, Math.floor(note / 12) * 12);
-    const p = keyFx[note];
-    showHud(noteName(note), p ? 'Key FX' : 'Empty key', p ? fxNames(p.fx) : 'save FX to it in the Keys tab', null);
+    const p = fxForKey(note);
+    showHud(noteName(note), keyFx[note] ? 'Key FX' : p ? 'Default FX' : 'Empty key', p ? fxNames(p.fx) : 'save FX to it, or a default, in the Keys tab', null);
     applyHeld();
     renderKeyDetail();
   }
@@ -2627,13 +2755,36 @@
     $('#oct-label').textContent = `${noteName(base)} to ${noteName(base + 24)}`;
   }
   function renderKeyDetail() {
-    const n = ui.keySel, p = keyFx[n];
+    const n = ui.keySel, p = keyFx[n], d = keyFx.default;
     $('#key-title').textContent = `Key ${noteName(n)}`;
-    $('#key-fx').textContent = p ? fxNames(p.fx) : 'Empty. Set up Sound FX and Time FX on a layer, then save them here.';
+    $('#key-fx').textContent = p ? fxNames(p.fx) : d ? `Uses the default: ${fxNames(d.fx)}` : 'Empty. Set up Sound FX and Time FX on a layer, then save them here or as the default.';
     $('#key-save').textContent = `Save FX of ${current().name}`;
     $('#key-clear').disabled = !p;
-    $('#key-try').disabled = !p;
+    $('#key-try').disabled = !p && !d;
+    $('#key-default-fx').textContent = d ? fxNames(d.fx) : 'none yet';
+    $('#key-default-save').textContent = `Save FX of ${current().name} as default`;
+    $('#key-default-clear').disabled = !d;
+    document.querySelectorAll('input[name="keylock"]').forEach(r => { r.checked = r.value === keyLock; });
   }
+  $('#key-default-save').addEventListener('click', () => {
+    keyFx.default = { fx: JSON.parse(JSON.stringify(current().fx)) };
+    saveKeyFx();
+    applyHeld();
+    renderKeyDetail();
+    announce(`Default key FX: ${fxNames(keyFx.default.fx)}. Every key without its own FX now plays these.`);
+  });
+  $('#key-default-clear').addEventListener('click', () => {
+    delete keyFx.default;
+    saveKeyFx();
+    applyHeld();
+    renderKeyDetail();
+    announce('Default key FX cleared');
+  });
+  document.querySelectorAll('input[name="keylock"]').forEach(r => r.addEventListener('change', () => {
+    keyLock = r.value;
+    try { localStorage.setItem('sketchtone.keylock', keyLock); } catch (e) { /* storage unavailable */ }
+    announce(keyLock === 'off' ? 'Key FX switch at once' : `Key FX switch on the next ${keyLock}`);
+  }));
   function selectKey(n, focus) {
     ui.keySel = n;
     renderPiano();
@@ -3171,14 +3322,92 @@
     announce(`Shaken clean: ${layer.name} is empty. Undo brings it back.`);
   });
 
+  // ---------- shortcuts ----------
+  // One list drives both the key handler below and the shortcuts popup (press ?).
+  const MOD = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl';
+  const SHORTCUTS = [
+    ['Play', [['Space', 'Play or pause'], ['Shift Space', 'Play or pause, even on the canvas'], ['Home', 'Stop and go back to the start'],
+      ['+  −', 'Faster or slower (Shift: by 10 BPM)'], ['Shift L', 'Loop on or off'], ['Shift R', 'Record on or off'], ['H', 'Hear lines while drawing']]],
+    ['Draw', [['V P L R O T S E', 'Select, Pencil, Line, Rectangle, Ellipse, Text, Spray, Eraser'], ['F', 'Shapes: outline or filled'],
+      ['[  ]', 'Quieter or louder lines'], ['G', 'Patterns'], ['Arrows', 'Move the pen on the canvas'], ['Space', 'Start or finish a line on the canvas'], ['Esc', 'Cancel, or deselect']]],
+    ['Edit', [[`${MOD} Z`, 'Undo'], [`Shift ${MOD} Z`, 'Redo'], [`${MOD} D`, 'Duplicate the selected line'], ['Alt arrows', 'Nudge the selected line (Shift: bigger steps)'],
+      ['Delete', 'Remove the selected line'], ['Double-click', 'Change the words of a text']]],
+    ['Layers', [['1 … 8', 'Pick a layer'], ['D', 'Pick the drum layer'], ['N', 'New layer'], ['M', 'Mute the picked layer'], ['Shift S', 'Solo the picked layer']]],
+    ['Windows', [['?', 'These shortcuts'], [`${MOD} ,`, 'Settings'], [`${MOD} S`, 'Save a version'], [`${MOD} E`, 'Export'], ['K', 'MIDI setup']]],
+    ['Knobs', [['Arrows', 'Turn the focused knob (Shift: bigger steps)'], ['Home  End', 'Minimum or maximum'], ['L', 'Pin the focused knob to a controller knob']]],
+  ];
+  const keysDlg = $('#keys-dialog');
+  $('#keys-body').innerHTML = SHORTCUTS.map(([group, rows]) => `
+    <section class="kd-group"><h3>${group}</h3><dl>${rows.map(([k, what]) =>
+      `<div class="kd-row"><dt>${k.split(/\s{2}|\s(?=\S)/).filter(Boolean).map(x => `<kbd>${esc(x)}</kbd>`).join(' ')}</dt><dd>${esc(what)}</dd></div>`).join('')}</dl></section>`).join('');
+  const openShortcuts = () => { if (!keysDlg.open) keysDlg.showModal(); };
+  document.querySelectorAll('[data-open-shortcuts]').forEach(b => b.addEventListener('click', openShortcuts));
+  $('#keys-close').addEventListener('click', () => keysDlg.close());
+  keysDlg.addEventListener('click', e => { if (e.target === keysDlg) keysDlg.close(); });
+
+  // Nudge the selected item: a 16th in time or a semitone in pitch (Shift: a beat / 4 semitones).
+  function nudgeSelected(key, big) {
+    const s = selected();
+    if (!s) return false;
+    const steps = project.bars * 16, n = big ? 4 : 1;
+    const d = { ArrowLeft: [-n / steps, 0], ArrowRight: [n / steps, 0], ArrowUp: [0, -n / 36], ArrowDown: [0, n / 36] }[key];
+    if (performance.now() - knobUndoAt > 1200) snapshot();
+    knobUndoAt = performance.now();
+    replaceSelected(it => { const tf = tfOf(it); return { ...it, tf: { ...tf, dx: tf.dx + d[0], dy: tf.dy + d[1] } }; });
+    save();
+    syncLineBar();
+    requestRender();
+    speak(describe(selected().item, s.layer));
+    return true;
+  }
+  function duplicateSelected() {
+    const s = selected();
+    if (!s) { announce('Select a line first, then duplicate it'); return; }
+    snapshot();
+    const tf = tfOf(s.item), copy = { ...JSON.parse(JSON.stringify(s.item)), id: uid(), tf: { ...tf, dx: tf.dx + 1 / (project.bars * 4) } };
+    s.layer.strokes.push(copy);
+    ui.sel = { layerId: s.layer.id, id: copy.id };
+    refreshAfterEdit();
+    renderKnobStrip();
+    announce('Duplicated, one beat later');
+  }
+  function toggleLayerFlag(flag) {
+    if (ui.drumSel) { drumRowAct(flag === 'muted' ? 'mute' : 'solo'); return; }
+    const l = current();
+    l[flag] = !l[flag];
+    engine.updateAll();
+    renderLayers();
+    requestRender();
+    save();
+    announce(`${l.name} ${flag === 'muted' ? (l.muted ? 'muted' : 'unmuted') : (l.solo ? 'solo' : 'solo off')}`);
+  }
+
   // ---------- global keys ----------
   document.addEventListener('keydown', e => {
     const t = e.target, typing = (t.tagName === 'INPUT' && (t.type === 'text' || t.type === 'number')) || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT';
-    if (dlg.open || appDlg.open) return;
+    if (dlg.open || appDlg.open || keysDlg.open || patternDlg.open) return;
     if (e.key === 'Escape' && learning) { cancelLearn(); announce('Pinning cancelled'); return; }
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z' && !typing) {
+    const mod = e.metaKey || e.ctrlKey, k = e.key.toLowerCase();
+    const drawing = ui.pen || ui.draft || ui.spray;
+    // letters work anywhere except while typing or on a focused knob (it uses its own keys)
+    const free = !typing && !(t.getAttribute && t.getAttribute('role') === 'slider') && !drawing;
+    if (mod && k === 'z' && !typing) {
       e.preventDefault();
       if (e.shiftKey) redo(); else undo();
+    } else if (mod && k === 'd' && !typing) {
+      e.preventDefault();
+      duplicateSelected();
+    } else if (mod && k === 's') {
+      e.preventDefault();
+      if (saveVersion()) announce('Version saved. Find it in Settings, Project.'); else announce('Could not save a version: browser storage is full or blocked');
+    } else if (mod && k === 'e') {
+      e.preventDefault();
+      openAppDialog('export');
+    } else if (mod && e.key === ',') {
+      e.preventDefault();
+      openAppDialog('settings');
+    } else if (mod || e.altKey && !e.key.startsWith('Arrow')) {
+      // leave other browser shortcuts alone
     } else if ((e.key === 'Delete' || e.key === 'Backspace') && !typing && (t === document.body || t === canvas) && selected()) {
       e.preventDefault();
       deleteSelected();
@@ -3186,18 +3415,60 @@
       const id = ui.panel;
       setPanel(null);
       document.querySelector(`.qa-open[data-panel="${id}"]`).focus();
-    } else if ((t === document.body || t === canvas) && !typing && !e.metaKey && !e.ctrlKey && !e.altKey && !ui.pen && !ui.draft && !ui.spray
-      && (TOOLS.some(x => x.key === e.key.toLowerCase()) || e.key.toLowerCase() === 'f')) {
-      if (e.key.toLowerCase() === 'f') {
+    } else if (e.altKey && e.key.startsWith('Arrow') && free) {
+      if (nudgeSelected(e.key, e.shiftKey)) e.preventDefault();
+    } else if (e.key === ' ' && (e.shiftKey ? free : t === document.body || t === tl)) {
+      e.preventDefault();
+      togglePlay();
+    } else if (!free) {
+      // typing, drawing or on a knob
+    } else if (e.key === '?') {
+      e.preventDefault();
+      openShortcuts();
+    } else if (e.key === 'Home' && t !== canvas) {
+      e.preventDefault();
+      stopAll();
+      announce('Stopped, back to the start');
+    } else if (e.key === '+' || e.key === '=' || e.key === '-' || e.key === '_') {
+      e.preventDefault();
+      setBpm(project.bpm + (e.key === '+' || e.key === '=' ? 1 : -1) * (e.shiftKey ? 10 : 1));
+      announce(`${project.bpm} BPM`);
+    } else if (e.key === '[' || e.key === ']') {
+      const sizes = ['s', 'm', 'l'], i = Math.max(0, Math.min(2, sizes.indexOf(ui.brush) + (e.key === ']' ? 1 : -1)));
+      const r = document.querySelector(`input[name="brush"][value="${sizes[i]}"]`);
+      r.checked = true;
+      r.dispatchEvent(new Event('change'));
+      announce(['Quiet', 'Medium', 'Loud'][i]);
+    } else if (/^[1-8]$/.test(e.key)) {
+      const l = project.layers[Number(e.key) - 1];
+      if (l) selectLayer(l.id); else announce(`There is no layer ${e.key}`);
+    } else if (e.shiftKey && k === 's') {
+      toggleLayerFlag('solo');
+    } else if (e.shiftKey && k === 'l') {
+      $('#loop').click();
+      announce(project.loop ? 'Loop on' : 'Loop off');
+    } else if (e.shiftKey && k === 'r') {
+      $('#record').click();
+    } else if (k === 'd') {
+      selectDrums();
+    } else if (k === 'm') {
+      toggleLayerFlag('muted');
+    } else if (k === 'n') {
+      $('#add-layer').click();
+    } else if (k === 'h') {
+      hearBtn.click();
+    } else if (k === 'g') {
+      setPatternOpen(true);
+    } else if (k === 'k') {
+      $('#midi-btn').click();
+    } else if (TOOLS.some(x => x.key === k) || k === 'f') {
+      if (k === 'f') {
         setFill(!ui.fill);
         if (ui.tool !== 'rect' && ui.tool !== 'ellipse') setTool('rect', true);
         announce(ui.fill ? 'Filled shapes' : 'Outline shapes');
       } else {
-        setTool(TOOLS.find(x => x.key === e.key.toLowerCase()).id);
+        setTool(TOOLS.find(x => x.key === k).id);
       }
-    } else if (e.key === ' ' && (t === document.body || t === tl)) {
-      e.preventDefault();
-      togglePlay();
     }
   });
 
@@ -3254,6 +3525,7 @@
   buildCards();
   buildEtchKnobs();
   buildDrumKnobs();
+  buildLineBar();
   setTool(ui.tool, true);
   refreshAll();
   renderMidiStatus();

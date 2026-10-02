@@ -6,21 +6,20 @@
   <title>Sketchtone</title>
   <meta name="description" content="Draw lines and hear them as sound.">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 28'%3E%3Crect width='28' height='28' rx='8' fill='%235151cd'/%3E%3Cpath d='M5 17c3 0 3-7 6-7s3 9 6 9 3-6 6-6' stroke='white' stroke-width='2.4' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
-  <script>try { document.documentElement.dataset.theme = localStorage.getItem('sketchtone.theme') || 'light'; } catch (e) { document.documentElement.dataset.theme = 'light'; }</script>
-  <link rel="stylesheet" href="styles.css?v=20261002g">
-  <script defer src="js/sounds.js?v=20261002g"></script>
-  <script defer src="js/fx.js?v=20261002g"></script>
-  <script defer src="js/drums.js?v=20261002g"></script>
-  <script defer src="js/shapes.js?v=20261002g"></script>
-  <script defer src="js/patterns.js?v=20261002g"></script>
-  <script defer src="js/voice.js?v=20261002g"></script>
-  <script defer src="js/audio.js?v=20261002g"></script>
-  <script defer src="js/knob.js?v=20261002g"></script>
-  <script defer src="js/midi.js?v=20261002g"></script>
-  <script defer src="js/app.js?v=20261002g"></script>
+  <link rel="preload" href="fonts/Inter-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/Inter-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
+  <script src="js/theme.js?v=20261002p"></script>
+  <link rel="stylesheet" href="styles.css?v=20261002p">
+  <script defer src="js/sounds.js?v=20261002p"></script>
+  <script defer src="js/fx.js?v=20261002p"></script>
+  <script defer src="js/drums.js?v=20261002p"></script>
+  <script defer src="js/shapes.js?v=20261002p"></script>
+  <script defer src="js/patterns.js?v=20261002p"></script>
+  <script defer src="js/voice.js?v=20261002p"></script>
+  <script defer src="js/audio.js?v=20261002p"></script>
+  <script defer src="js/knob.js?v=20261002p"></script>
+  <script defer src="js/midi.js?v=20261002p"></script>
+  <script defer src="js/app.js?v=20261002p"></script>
 </head>
 <body>
   <a class="skip-link" href="#canvas">Skip to drawing area</a>
@@ -34,6 +33,9 @@
     <input id="project-name" class="project-name" type="text" autocomplete="off" spellcheck="false" maxlength="60">
     <button id="midi-btn" class="btn midi-btn" type="button" aria-haspopup="dialog">
       <span class="midi-dot" aria-hidden="true"></span><span id="midi-label">Connect MIDI</span>
+    </button>
+    <button id="keys-btn" class="icon-btn" type="button" data-open-shortcuts aria-haspopup="dialog" aria-label="Keyboard shortcuts (?)" title="Keyboard shortcuts (?)">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M6 10h.01M9 10h.01M12 10h.01M15 10h.01M18 10h.01M7.5 14h9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
     </button>
     <button id="settings-btn" class="icon-btn" type="button" aria-haspopup="dialog" aria-label="Settings, project and export" title="Settings, project and export">
       <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
@@ -64,7 +66,8 @@
           <label title="Middle voice"><input type="radio" name="voice" value="mid" checked><span>Mid</span></label>
           <label title="High voice"><input type="radio" name="voice" value="high"><span>High</span></label>
         </div>
-        <button type="button" class="btn btn-small etch-toggle" id="etch-toggle" aria-pressed="false" aria-controls="etch-bar" title="Draw with two knobs, like the red toy">
+        <!-- Etch mode is parked for a later release: the code stays, the button is hidden. -->
+        <button type="button" class="btn btn-small etch-toggle" id="etch-toggle" hidden aria-pressed="false" aria-controls="etch-bar" title="Draw with two knobs, like the red toy">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="7.5" cy="16" r="1.8" fill="currentColor"/><circle cx="16.5" cy="16" r="1.8" fill="currentColor"/><path d="M7 11l3-3 3 2 4-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
           Etch mode
         </button>
@@ -82,11 +85,11 @@
         <button type="button" class="btn btn-small" id="clear-layer">Clear layer</button>
       </div>
 
+      <div class="line-bar" id="line-bar" role="group" aria-labelledby="lb-title"></div>
       <div class="knob-strip canvas-strip" id="knob-strip" hidden>
         <span class="ks-page"><span class="ks-kicker">Knobs shape</span> <b id="ks-page"></b></span>
         <ol class="ks-list" id="ks-list" aria-label="What each controller knob does to the drawing"></ol>
       </div>
-      <div class="pattern-bar" id="pattern-bar" role="region" aria-label="Pattern generator" hidden></div>
       <div class="canvas-wrap">
         <canvas id="canvas" tabindex="0" role="application" aria-roledescription="drawing area"
                 aria-label="Drawing area" aria-describedby="canvas-help"></canvas>
@@ -180,20 +183,7 @@
             <button type="button" class="btn btn-small" id="add-layer">+ Add</button>
           </div>
           <ul id="layer-list" class="layer-list"></ul>
-          <details class="help">
-            <summary>Keyboard shortcuts</summary>
-            <dl>
-              <dt>Space</dt><dd>Play or pause</dd>
-              <dt>Ctrl/⌘ Z</dt><dd>Undo (add Shift to redo)</dd>
-              <dt>Arrows on drawing area</dt><dd>Move the pen</dd>
-              <dt>Space on drawing area</dt><dd>Start or finish a line</dd>
-              <dt>V P L R O S E</dt><dd>Select, Pencil, Line, Rectangle, Ellipse, Spray, Eraser</dd>
-              <dt>Delete</dt><dd>Remove the selected line</dd>
-              <dt>F</dt><dd>Shapes: outline or filled</dd>
-              <dt>Arrows on a knob</dt><dd>Turn it (Shift for bigger steps)</dd>
-              <dt>Escape</dt><dd>Close the sound panel</dd>
-            </dl>
-          </details>
+          <button type="button" class="btn btn-small keys-link" data-open-shortcuts>Keyboard shortcuts <kbd>?</kbd></button>
         </div>
 
         <div class="pane" id="pane-timeline" role="tabpanel" aria-labelledby="tab-timeline" hidden>
@@ -226,7 +216,23 @@
           <div class="read-box">
             <p class="kicker">Keyboard</p>
             <h2 class="read-title">FX keys</h2>
-            <p class="keys-intro">Save FX on a key, then hold that key on your MPK: every layer plays with those FX until you let go.</p>
+            <p class="keys-intro">Hold a key on your MPK: every layer plays with its FX until you let go. Keys without their own FX use the default.</p>
+            <div class="read-inner key-default">
+              <div class="kd-line"><span class="read-label">Default for every key</span><span class="read-desc" id="key-default-fx"></span></div>
+              <div class="key-actions">
+                <button type="button" class="dev-btn" id="key-default-save"></button>
+                <button type="button" class="dev-btn" id="key-default-clear">Clear default</button>
+              </div>
+              <div class="read-row">
+                <span class="read-label" id="key-lock-label">Lock to</span>
+                <div class="seg seg-small" id="key-lock" role="radiogroup" aria-labelledby="key-lock-label">
+                  <label><input type="radio" name="keylock" value="beat"><span>Beat</span></label>
+                  <label><input type="radio" name="keylock" value="bar"><span>Bar</span></label>
+                  <label><input type="radio" name="keylock" value="off"><span>Off</span></label>
+                </div>
+              </div>
+              <p class="read-desc">While playing, effects switch on and off on the next beat or bar, so they never land out of time.</p>
+            </div>
             <div class="piano" id="piano" role="group" aria-label="Keys"></div>
             <div class="oct-row">
               <button type="button" class="dev-btn" id="oct-down" aria-label="Octave down">−</button>
@@ -297,6 +303,20 @@
     <span class="hud-bar"><i id="hud-bar"></i></span>
   </div>
 
+  <dialog class="app-dialog keys-dialog" id="keys-dialog" aria-labelledby="kd-title">
+    <div class="kd-shell">
+      <div class="kd-head">
+        <h2 id="kd-title">Keyboard shortcuts</h2>
+        <button type="button" class="icon-btn" id="keys-close" aria-label="Close">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div class="kd-body" id="keys-body"></div>
+    </div>
+  </dialog>
+  <dialog class="app-dialog pattern-dialog" id="pattern-dialog" aria-labelledby="pb-title">
+    <div class="pattern-bar" id="pattern-bar"></div>
+  </dialog>
   <dialog class="app-dialog" id="app-dialog" aria-labelledby="ad-title">
     <div class="ad-shell">
       <nav class="ad-side" aria-label="Settings sections">
@@ -400,7 +420,7 @@
             <li><b>Sound files are made in your browser.</b> Exports and recordings are created on your computer and saved straight to it. Nothing is uploaded.</li>
             <li><b>MIDI only when you ask.</b> The browser asks for MIDI access when you press Connect MIDI. Sketchtone only reads your controller.</li>
             <li><b>No microphone, no camera.</b></li>
-            <li><b>Fonts.</b> The Inter typeface loads from Google Fonts, so Google receives your IP address when the page opens.</li>
+            <li><b>No third parties.</b> Everything, fonts included, comes from this site only, and the browser is told to refuse anything else.</li>
             <li><b>Hosting.</b> The site is served by Netlify, which may keep standard server logs (such as IP address and pages requested).</li>
             <li><b>Delete anytime.</b> Settings → Delete all saved data removes everything Sketchtone stored in this browser.</li>
           </ul>
