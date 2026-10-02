@@ -8,18 +8,18 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 28'%3E%3Crect width='28' height='28' rx='8' fill='%235151cd'/%3E%3Cpath d='M5 17c3 0 3-7 6-7s3 9 6 9 3-6 6-6' stroke='white' stroke-width='2.4' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="preload" href="fonts/Inter-Regular.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="fonts/Inter-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
-  <script src="js/theme.js?v=20261002r"></script>
-  <link rel="stylesheet" href="styles.css?v=20261002r">
-  <script defer src="js/sounds.js?v=20261002r"></script>
-  <script defer src="js/fx.js?v=20261002r"></script>
-  <script defer src="js/drums.js?v=20261002r"></script>
-  <script defer src="js/shapes.js?v=20261002r"></script>
-  <script defer src="js/patterns.js?v=20261002r"></script>
-  <script defer src="js/voice.js?v=20261002r"></script>
-  <script defer src="js/audio.js?v=20261002r"></script>
-  <script defer src="js/knob.js?v=20261002r"></script>
-  <script defer src="js/midi.js?v=20261002r"></script>
-  <script defer src="js/app.js?v=20261002r"></script>
+  <script src="js/theme.js?v=20261003j"></script>
+  <link rel="stylesheet" href="styles.css?v=20261003j">
+  <script defer src="js/sounds.js?v=20261003j"></script>
+  <script defer src="js/fx.js?v=20261003j"></script>
+  <script defer src="js/drums.js?v=20261003j"></script>
+  <script defer src="js/shapes.js?v=20261003j"></script>
+  <script defer src="js/patterns.js?v=20261003j"></script>
+  <script defer src="js/voice.js?v=20261003j"></script>
+  <script defer src="js/audio.js?v=20261003j"></script>
+  <script defer src="js/knob.js?v=20261003j"></script>
+  <script defer src="js/midi.js?v=20261003j"></script>
+  <script defer src="js/app.js?v=20261003j"></script>
 </head>
 <body>
   <a class="skip-link" href="#canvas">Skip to drawing area</a>
@@ -58,6 +58,15 @@
           <label><input type="radio" name="brush" value="m" checked><span><i class="thick thick-m" aria-hidden="true"></i>Medium</span></label>
           <label><input type="radio" name="brush" value="l"><span><i class="thick thick-l" aria-hidden="true"></i>Loud</span></label>
         </div>
+        <label class="select-label snap-label" title="Time snap (Q): where new lines start and end">
+          <span>Snap</span>
+          <select id="snap">
+            <option value="off">Off</option>
+            <option value="1/4">1/4</option>
+            <option value="1/8">1/8</option>
+            <option value="1/16">1/16</option>
+          </select>
+        </label>
         <div class="seg fill-seg" id="fill-seg" role="radiogroup" aria-label="Shape style" hidden>
           <label title="Outline (F)"><input type="radio" name="fill" value="outline" checked><span><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="7" width="14" height="10" fill="none" stroke="currentColor" stroke-width="2"/></svg>Outline</span></label>
           <label title="Filled (F)"><input type="radio" name="fill" value="filled"><span><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="7" width="14" height="10" fill="currentColor" stroke="currentColor" stroke-width="2"/></svg>Filled</span></label>
@@ -83,7 +92,9 @@
         <button type="button" class="icon-btn" id="redo" aria-label="Redo" title="Redo (Shift Ctrl/⌘ Z)">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 14l5-5-5-5M20 9H9.5a5.5 5.5 0 0 0 0 11H13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
-        <button type="button" class="btn btn-small" id="clear-layer">Clear layer</button>
+        <button type="button" class="icon-btn" id="clear-layer" aria-label="Clear layer" title="Clear layer (undo brings it back)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
       </div>
 
       <div class="line-bar" id="line-bar" role="group" aria-labelledby="lb-title"></div>
@@ -91,10 +102,14 @@
         <span class="ks-page"><span class="ks-kicker">Knobs shape</span> <b id="ks-page"></b></span>
         <ol class="ks-list" id="ks-list" aria-label="What each controller knob does to the drawing"></ol>
       </div>
+      <div class="timeline" id="timeline" role="slider" tabindex="0" aria-label="Start position" aria-valuemin="0">
+        <canvas id="timeline-canvas" aria-hidden="true"></canvas>
+      </div>
       <div class="canvas-wrap">
         <canvas id="canvas" tabindex="0" role="application" aria-roledescription="drawing area"
                 aria-label="Drawing area" aria-describedby="canvas-help"></canvas>
         <div class="tool-hint" id="tool-hint" aria-hidden="true"></div>
+        <div class="canvas-pos" id="canvas-pos" aria-hidden="true"></div>
         <input type="text" id="text-entry" class="text-entry" maxlength="60" autocomplete="off" spellcheck="false" placeholder="Type words, then Enter" aria-label="Words to sing. Enter places them, Escape cancels." hidden>
         <div class="keyfx-badge" id="keyfx-badge" role="status" hidden></div>
         <div class="empty-hint" id="empty-hint">
@@ -116,11 +131,8 @@
       <p id="canvas-help" class="sr-only">
         Left to right is time, top to bottom is pitch from high to low.
         With the keyboard: arrow keys move the pen, hold Shift to move faster,
-        Space or Enter starts and finishes a line, Escape cancels it.
+        Enter starts and finishes a line, Escape cancels it. Space always plays or pauses.
       </p>
-      <div class="timeline" id="timeline" role="slider" tabindex="0" aria-label="Start position" aria-valuemin="0">
-        <canvas id="timeline-canvas" aria-hidden="true"></canvas>
-      </div>
     </section>
 
     <div class="rail">
@@ -132,6 +144,10 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>
           </button>
           <div class="readout" id="readout" aria-hidden="true"></div>
+        </div>
+        <div class="meter" title="Output level">
+          <div class="meter-track" aria-hidden="true"><i id="meter-bar"></i></div>
+          <button type="button" class="meter-clip" id="meter-clip" hidden title="Click to reset">Clip</button>
         </div>
         <div class="transport-row">
           <div class="bpm" role="group" aria-labelledby="bpm-label">
@@ -166,7 +182,7 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4z" fill="currentColor"/><path class="hear-waves" d="M16 9a4 4 0 0 1 0 6M18.5 6.5a7.5 7.5 0 0 1 0 11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path class="hear-off" d="M16 9.5l5 5M21 9.5l-5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
           </button>
           <button type="button" id="record" class="rec-btn" aria-pressed="false">
-            <span class="rec-dot" aria-hidden="true"></span><span class="rec-label">Record</span>
+            <span class="rec-dot" aria-hidden="true"></span><span class="rec-label">Record audio</span>
           </button>
           <button type="button" id="export" class="btn export-btn">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -178,8 +194,8 @@
       <aside class="side card" aria-label="Layers and timeline">
         <div class="tabs" role="tablist" aria-label="Side panel">
           <button type="button" role="tab" class="tab" id="tab-layers" aria-controls="pane-layers" aria-selected="true">Layers</button>
-          <button type="button" role="tab" class="tab" id="tab-timeline" aria-controls="pane-timeline" aria-selected="false" tabindex="-1">Timeline</button>
-          <button type="button" role="tab" class="tab" id="tab-keys" aria-controls="pane-keys" aria-selected="false" tabindex="-1">Keys</button>
+          <button type="button" role="tab" class="tab" id="tab-timeline" aria-controls="pane-timeline" aria-selected="false" tabindex="-1" title="How the loop is read: forwards, backwards, sliced">Playback</button>
+          <button type="button" role="tab" class="tab" id="tab-keys" aria-controls="pane-keys" aria-selected="false" tabindex="-1" title="MPK keys that switch effects on while held">Perform</button>
         </div>
 
         <div class="pane" id="pane-layers" role="tabpanel" aria-labelledby="tab-layers">
@@ -193,8 +209,8 @@
 
         <div class="pane" id="pane-timeline" role="tabpanel" aria-labelledby="tab-timeline" hidden>
           <div class="read-box">
-            <p class="kicker">Timeline</p>
-            <h2 class="read-title">Reading</h2>
+            <p class="kicker">Playback</p>
+            <h2 class="read-title">Read mode</h2>
             <div class="read-inner">
               <div class="read-head">
                 <span>Reading · <b id="read-layer"></b></span>
@@ -219,8 +235,8 @@
         </div>
         <div class="pane" id="pane-keys" role="tabpanel" aria-labelledby="tab-keys" hidden>
           <div class="read-box">
-            <p class="kicker">Keyboard</p>
-            <h2 class="read-title">FX keys</h2>
+            <p class="kicker">Perform</p>
+            <h2 class="read-title">Effect keys</h2>
             <p class="keys-intro">Hold a key on your MPK: every layer plays with its FX until you let go. Keys without their own FX use the default.</p>
             <div class="read-inner key-default">
               <div class="kd-line"><span class="read-label">Default for every key</span><span class="read-desc" id="key-default-fx"></span></div>
@@ -258,46 +274,73 @@
       </aside>
     </div>
 
-    <section class="drum-card card" id="drum-card" aria-labelledby="drum-title">
-      <div class="drum-head">
-        <h2 id="drum-title">Drums</h2>
-        <div class="seg seg-small" role="radiogroup" aria-label="Energy pen">
-          <label><input type="radio" name="drumtool" value="draw" checked><span>Draw energy</span></label>
-          <label><input type="radio" name="drumtool" value="gap"><span>Gap</span></label>
+    <section class="dock card" id="dock" aria-label="Drums, sound and mix">
+      <div class="dock-bar">
+        <div class="dock-tabs" role="tablist" aria-label="Panel">
+          <button type="button" role="tab" class="dock-tab" id="dt-drums" aria-controls="drum-card" aria-selected="true">Drums</button>
+          <button type="button" role="tab" class="dock-tab" id="dt-sound" aria-controls="quick" aria-selected="false" tabindex="-1">Sound</button>
+          <button type="button" role="tab" class="dock-tab" id="dt-mix" aria-controls="mixer" aria-selected="false" tabindex="-1">Mix</button>
         </div>
-        <button type="button" class="btn btn-small" id="drum-flat">Flat line</button>
-        <button type="button" class="btn btn-small" id="drum-dice" title="Same knobs, new groove">Roll dice</button>
-        <button type="button" class="btn btn-small" id="drum-keep" title="Keep this groove, then blend back to it with Morph">Keep groove</button>
-        <button type="button" class="btn btn-small" id="drum-clear">Clear</button>
-        <span class="toolbar-spacer"></span>
-        <button type="button" class="btn btn-small drum-mpk" id="drum-mpk" aria-pressed="false" title="Turn K1 to K8 on your controller into the drum knobs">MPK knobs: drums</button>
-        <label class="check"><input type="checkbox" id="drum-on" checked>Drums on</label>
-        <button type="button" class="icon-btn" id="drum-toggle" aria-expanded="true" aria-controls="drum-body" aria-label="Show drums" title="Hide drums">
+        <span class="dock-hint" id="dock-hint"></span>
+        <button type="button" class="icon-btn" id="dock-toggle" aria-expanded="true" aria-controls="dock-body" title="Hide the panel (more room to draw)" aria-label="Hide the panel">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
       </div>
-      <div class="drum-body" id="drum-body">
-        <div class="drum-wrap">
-          <canvas id="drum-canvas" tabindex="0" role="application" aria-roledescription="drum energy" aria-label="Drum energy line" aria-describedby="drum-help"></canvas>
-          <div class="drum-empty" id="drum-empty">Draw the red energy line: high = busy drums, low = sparse, a gap = silence. Or tap a style below.</div>
-        </div>
-        <p id="drum-help" class="sr-only">Left to right is time, as on the canvas. The red line is the drum energy: higher means busier drums. Parts with no line are silent. The dots are the hits the drummer generates. With the keyboard: Left and Right arrows move one step, Up and Down raise or lower the energy there, Delete makes a gap, Space puts the line back.</p>
-        <div class="drum-styles tiles" id="drum-styles" role="group" aria-label="Styles: set all drum knobs at once"></div>
-        <div class="drum-controls">
-          <div class="drum-groove" id="drum-macros" role="group" aria-label="Generate"></div>
-          <div class="drum-groove drum-feel" id="drum-feel" role="group" aria-label="Feel"></div>
-        </div>
+      <div class="dock-body" id="dock-body">
+        <section class="drum-card dock-pane" id="drum-card" role="tabpanel" aria-labelledby="dt-drums">
+          <div class="drum-head">
+            <h2 id="drum-title" class="sr-only">Drums</h2>
+            <div class="seg seg-small" role="radiogroup" aria-label="Energy pen">
+              <label><input type="radio" name="drumtool" value="draw" checked><span>Draw energy</span></label>
+              <label><input type="radio" name="drumtool" value="gap"><span>Gap</span></label>
+            </div>
+            <button type="button" class="btn btn-small" id="drum-flat">Flat line</button>
+            <button type="button" class="btn btn-small" id="drum-dice" title="Same knobs, new groove">Roll dice</button>
+            <button type="button" class="btn btn-small" id="drum-keep" title="Keep this groove, then blend back to it with Morph">Keep groove</button>
+            <button type="button" class="btn btn-small" id="drum-clear">Clear</button>
+            <span class="toolbar-spacer"></span>
+            <button type="button" class="btn btn-small drum-mpk" id="drum-mpk" aria-pressed="false" title="Turn K1 to K8 on your controller into the drum knobs">MPK knobs: drums</button>
+            <label class="check"><input type="checkbox" id="drum-on" checked>Enabled</label>
+            <span class="drum-state" id="drum-state" aria-live="polite"></span>
+            <button type="button" class="icon-btn" id="drum-toggle" aria-expanded="true" aria-controls="drum-body" aria-label="Show drums" title="Hide drums">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+          </div>
+          <div class="drum-body" id="drum-body">
+            <div class="drum-wrap">
+              <canvas id="drum-canvas" tabindex="0" role="application" aria-roledescription="drum energy" aria-label="Drum energy line" aria-describedby="drum-help"></canvas>
+              <div class="drum-empty" id="drum-empty">Draw the red energy line: high = busy drums, low = sparse, a gap = silence. Or tap a style below.</div>
+            </div>
+            <p id="drum-help" class="sr-only">Left to right is time, as on the canvas. The red line is the drum energy: higher means busier drums. Parts with no line are silent. The dots are the hits the drummer generates. With the keyboard: Left and Right arrows move one step, Up and Down raise or lower the energy there, Delete makes a gap, Enter puts the line back.</p>
+            <div class="drum-styles tiles" id="drum-styles" role="group" aria-label="Styles: set all drum knobs at once"></div>
+            <div class="drum-controls">
+              <div class="drum-groove" id="drum-macros" role="group" aria-label="Generate"></div>
+              <div class="drum-groove drum-feel" id="drum-feel" role="group" aria-label="Feel"></div>
+            </div>
+          </div>
+        </section>
+
+
+        <section class="quick dock-pane" id="quick" role="tabpanel" aria-labelledby="dt-sound" hidden>
+          <h2 id="quick-title" class="sr-only">Sound design for the selected layer</h2>
+          <div class="qa-cards" id="qa-cards"></div>
+          <div class="device" id="panel" role="region" aria-labelledby="panel-title" hidden></div>
+        </section>
+
+        <section class="mixer dock-pane" id="mixer" role="tabpanel" aria-labelledby="dt-mix" hidden>
+          <h2 class="sr-only">Mix</h2>
+          <div class="mix-strips" id="mix-strips"></div>
+        </section>
       </div>
     </section>
-
-
-    <section class="quick card" id="quick" aria-labelledby="quick-title">
-      <h2 id="quick-title" class="sr-only">Sound design for the selected layer</h2>
-      <div class="qa-cards" id="qa-cards"></div>
-      <div class="device" id="panel" role="region" aria-labelledby="panel-title" hidden></div>
-    </section>
-
   </main>
+  <div class="mini-transport" id="mini-transport" role="group" aria-label="Transport">
+    <button type="button" class="play-btn" id="mini-play" aria-label="Play or pause"></button>
+    <button type="button" class="icon-btn stop-btn" id="mini-stop" aria-label="Stop all sound">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>
+    </button>
+    <span class="readout" id="mini-readout" aria-hidden="true"></span>
+  </div>
 
   <div id="live" class="sr-only" aria-live="polite"></div>
 

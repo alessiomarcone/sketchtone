@@ -188,7 +188,7 @@
   const anySolo = p => p.layers.some(l => l.solo) || !!(p.drums && p.drums.solo);
   const audible = (layer, project) => !layer.muted && (!anySolo(project) || layer.solo);
   const drumsAudible = p => !p.drums.muted && (!anySolo(p) || p.drums.solo);
-  const DRUM_FX_LAYER = { volume: 1 }; // the drum bus already applies the drum volume
+  const drumChannel = d => ({ volume: 1, pan: d.pan || 0 }); // the drum bus already applies the drum volume
 
   // ---------- graph ----------
   const noiseBufs = new WeakMap();
@@ -223,10 +223,11 @@
     return { input: comp, output: out };
   }
 
+  // A channel: input -> effects -> volume -> pan -> destination.
   function makeBus(ctx, dest) {
-    const bus = { input: ctx.createGain(), out: ctx.createGain(), chain: [], inst: {}, sig: null };
+    const bus = { input: ctx.createGain(), out: ctx.createGain(), pan: ctx.createStereoPanner ? ctx.createStereoPanner() : null, chain: [], inst: {}, sig: null };
     bus.input.connect(bus.out);
-    bus.out.connect(dest);
+    if (bus.pan) bus.out.connect(bus.pan).connect(dest); else bus.out.connect(dest);
     return bus;
   }
 
@@ -256,9 +257,9 @@
     } else {
       for (const id of ids) bus.inst[id].update(fx[id], env, now);
     }
-    const v = isAudible ? layer.volume : 0;
-    if (now) bus.out.gain.value = v;
-    else bus.out.gain.setTargetAtTime(v, ctx.currentTime, 0.03);
+    const v = isAudible ? layer.volume : 0, pan = Math.max(-1, Math.min(1, layer.pan || 0));
+    if (now) { bus.out.gain.value = v; if (bus.pan) bus.pan.pan.value = pan; }
+    else { bus.out.gain.setTargetAtTime(v, ctx.currentTime, 0.03); if (bus.pan) bus.pan.pan.setTargetAtTime(pan, ctx.currentTime, 0.03); }
   }
 
   const bendSources = new WeakMap(); // ctx -> ConstantSourceNode (cents), realtime only
@@ -561,6 +562,37 @@
       this.updateAll();
     }
 
+    // Peak level of one channel (a layer id, or 'drums'), for the mixer meters.
+    channelPeak(id) {
+      const bus = id === 'drums' ? this.drumFx : this.buses.get(id);
+      if (!bus || !this.ctx) return 0;
+      if (!bus.meter) {
+        bus.meter = this.ctx.createAnalyser();
+        bus.meter.fftSize = 512;
+        bus.meterBuf = new Float32Array(bus.meter.fftSize);
+        (bus.pan || bus.out).connect(bus.meter);
+      }
+      bus.meter.getFloatTimeDomainData(bus.meterBuf);
+      let pk = 0;
+      for (const v of bus.meterBuf) { const a = Math.abs(v); if (a > pk) pk = a; }
+      return pk;
+    }
+
+    // Peak level of what goes to the speakers (0..1+), for the meter.
+    peak() {
+      if (!this.ctx) return 0;
+      if (!this.meter) {
+        this.meter = this.ctx.createAnalyser();
+        this.meter.fftSize = 1024;
+        this.meterBuf = new Float32Array(this.meter.fftSize);
+        this.master.output.connect(this.meter);
+      }
+      this.meter.getFloatTimeDomainData(this.meterBuf);
+      let pk = 0;
+      for (const v of this.meterBuf) { const a = Math.abs(v); if (a > pk) pk = a; }
+      return pk;
+    }
+
     setMasterVolume(v) { // speaker level only; exports keep the standard level
       this.masterVol = v;
       if (this.ctx) this.master.output.gain.setTargetAtTime(v, this.ctx.currentTime, 0.03);
@@ -668,7 +700,7 @@
       if (!this.ctx) return;
       const p = this.getProject(), d = p.drums;
       configureDrumBus(this.drumBus, this.ctx, d, now, drumsAudible(p));
-      configureBus(this.drumFx, this.ctx, DRUM_FX_LAYER, this.env(), true, now, this.fxOf(d));
+      configureBus(this.drumFx, this.ctx, drumChannel(d), this.env(), true, now, this.fxOf(d));
     }
 
     // "Try sound" on the drum layer: a one-bar lick through its FX.
@@ -897,7 +929,7 @@
     if (d && drumsAudible(project)) {
       drumFx = makeBus(ctx, master.input);
       drumBus = makeDrumBus(ctx, drumFx.input);
-      configureBus(drumFx, ctx, DRUM_FX_LAYER, env, true, true, d.fx);
+      configureBus(drumFx, ctx, drumChannel(d), env, true, true, d.fx);
       configureDrumBus(drumBus, ctx, d, true);
     }
     const scheduleWindow = (u0, u1) => {

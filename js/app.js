@@ -51,12 +51,12 @@
 
   function newProject() {
     const layer = makeLayer(1);
-    return { name: 'Untitled sketch', bpm: 122, bars: 4, scale: 'pentatonic', loop: true, layerCount: 1, selected: layer.id, layers: [layer], drums: ST.defaultDrums() };
+    return { name: 'Untitled sketch', bpm: 122, bars: 4, scale: 'pentatonic', snap: 'off', loop: true, layerCount: 1, selected: layer.id, layers: [layer], drums: ST.defaultDrums() };
   }
 
   function normalize(p) {
     const base = newProject();
-    for (const k of ['bpm', 'bars', 'scale', 'loop', 'name', 'layerCount']) if (p[k] === undefined) p[k] = base[k];
+    for (const k of ['bpm', 'bars', 'scale', 'loop', 'name', 'layerCount', 'snap']) if (p[k] === undefined) p[k] = base[k];
     p.drums = ST.migrateDrums(p.drums);
     const fxBase = defaultFx();
     p.layers.forEach(l => {
@@ -239,12 +239,26 @@
         c.fillText(noteName(line.midi + (REGISTER[sel.sound.register] || 0)), 6, y - 2);
       }
     }
-    // beat and bar lines
+    // snap grid (finer than beats), then beats, then bars drawn stronger
+    const g = snapUnit();
+    if (g && g < 1 / beats - 1e-9) {
+      c.strokeStyle = theme.grid;
+      c.globalAlpha = 0.45;
+      c.setLineDash([1, 3]);
+      for (let i = 1; i < Math.round(1 / g); i++) {
+        const x = Math.round(i * g * W) + 0.5;
+        c.beginPath(); c.moveTo(x, 0); c.lineTo(x, H); c.stroke();
+      }
+      c.setLineDash([]);
+      c.globalAlpha = 1;
+    }
     for (let b = 1; b < beats; b++) {
-      const x = Math.round(b / beats * W) + 0.5;
-      c.strokeStyle = b % 4 === 0 ? theme['grid-strong'] : theme.grid;
+      const x = Math.round(b / beats * W) + 0.5, bar = b % 4 === 0;
+      c.strokeStyle = bar ? theme['grid-strong'] : theme.grid;
+      c.lineWidth = bar ? 1.5 : 1;
       c.beginPath(); c.moveTo(x, 0); c.lineTo(x, H); c.stroke();
     }
+    c.lineWidth = 1;
     // slices of the selected layer, numbered as in the Timeline tab
     if (sliced(sel)) {
       const n = sel.read.divisions;
@@ -488,14 +502,14 @@
   const beatsFmt = v => { const b = v * project.bars * 4; return `${b > 0 ? '+' : ''}${b.toFixed(2)} beats`; };
   const semisFmt = v => { const st = Math.round(v * 36); return `${st > 0 ? '+' : ''}${st} st`; };
   const DRAW_KNOBS = [
-    { key: 'dx', label: 'X', min: -1, max: 1, step: 0.0025, fmt: beatsFmt },
-    { key: 'dy', label: 'Y', min: -1, max: 1, step: 1 / 72, fmt: semisFmt, invert: true },
-    { key: 'waves', label: 'Sub num', min: 0, max: 24, step: 1, fmt: v => `${v} ${v === 1 ? 'wave' : 'waves'}`, style: true },
-    { key: 'amp', label: 'Amplitude', min: 0, max: 0.3, step: 0.002, fmt: v => `±${(v * 36).toFixed(1)} st`, style: true },
-    { key: 'sx', label: 'Stretch X', min: 0.1, max: 3, step: 0.01, fmt: v => `×${v.toFixed(2)}` },
-    { key: 'sy', label: 'Stretch Y', min: -2, max: 3, step: 0.01, fmt: v => `×${v.toFixed(2)}${v < 0 ? ' (flipped)' : ''}` },
-    { key: 'tilt', label: 'Tilt', min: -1, max: 1, step: 0.01, fmt: v => (Math.round(v * 36) ? `end ${semisFmt(v)}` : 'flat'), invert: true, style: true },
-    { key: 'gain', label: 'Loudness', min: 0.2, max: 1.6, step: 0.01, fmt: v => `×${v.toFixed(2)}`, style: true },
+    { key: 'dx', label: 'Time offset', min: -1, max: 1, step: 0.0025, fmt: beatsFmt, info: 'Moves it earlier or later in the loop' },
+    { key: 'dy', label: 'Transpose', min: -1, max: 1, step: 1 / 72, fmt: semisFmt, invert: true, info: 'Moves it up or down in pitch' },
+    { key: 'waves', label: 'Wave cycles', min: 0, max: 24, step: 1, fmt: v => `${v} ${v === 1 ? 'wave' : 'waves'}`, style: true, info: 'How many wobbles ride along the line' },
+    { key: 'amp', label: 'Wave depth', min: 0, max: 0.3, step: 0.002, fmt: v => `±${(v * 36).toFixed(1)} st`, style: true, info: 'How deep the wobbles go, in semitones' },
+    { key: 'sx', label: 'Time stretch', min: 0.1, max: 3, step: 0.01, fmt: v => `×${v.toFixed(2)}`, info: 'Makes it last longer or shorter' },
+    { key: 'sy', label: 'Pitch stretch', min: -2, max: 3, step: 0.01, fmt: v => `×${v.toFixed(2)}${v < 0 ? ' (flipped)' : ''}`, info: 'Makes its jumps bigger, smaller or upside down' },
+    { key: 'tilt', label: 'Slope', min: -1, max: 1, step: 0.01, fmt: v => (Math.round(v * 36) ? `end ${semisFmt(v)}` : 'flat'), invert: true, style: true, info: 'Lifts or lowers the end of the line' },
+    { key: 'gain', label: 'Volume', min: 0.2, max: 1.6, step: 0.01, fmt: v => `×${v.toFixed(2)}`, style: true, info: 'Louder or quieter (thickness)' },
   ];
 
   function selected() {
@@ -552,7 +566,8 @@
   function moveSelected(p) {
     const m = ui.moving;
     if (!m.moved) { snapshot(); m.moved = true; }
-    replaceSelected(it => ({ ...it, tf: { ...m.tf0, dx: m.tf0.dx + p[0] - m.start[0], dy: m.tf0.dy + p[1] - m.start[1] } }));
+    const dx = snapUnit() ? snapX(m.x0 + p[0] - m.start[0]) - m.x0 : p[0] - m.start[0]; // the start lands on the grid
+    replaceSelected(it => ({ ...it, tf: { ...m.tf0, dx: m.tf0.dx + dx, dy: m.tf0.dy + p[1] - m.start[1] } }));
     save();
     syncLineBar();
     requestRender();
@@ -570,8 +585,9 @@
   }
 
   let knobUndoAt = 0;
+  // One target at a time: the selected drawing, or (with nothing selected) the defaults for new lines.
   function setDraw(key, v, style) {
-    if (style) ui.brushTf[key] = v;
+    if (!selected() && style) ui.brushTf[key] = v;
     if (selected()) {
       if (performance.now() - knobUndoAt > 1200) snapshot(); // one undo step per knob gesture
       knobUndoAt = performance.now();
@@ -589,26 +605,41 @@
     const host = $('#line-bar');
     host.innerHTML = `
       <div class="lb-head">
-        <span class="lb-kicker" id="lb-title">Line</span>
+        <span class="lb-kicker" id="lb-title"></span>
         <span class="lb-target" id="lb-target"></span>
-        <button type="button" class="dev-btn lb-reset" id="lb-reset">Reset</button>
+        <div class="lb-actions">
+          <button type="button" class="dev-btn lb-reset" id="lb-reset">Reset</button>
+          <button type="button" class="dev-btn lb-switch" id="lb-switch"></button>
+        </div>
       </div>
       <div class="lb-knobs"></div>`;
     for (const d of DRAW_KNOBS) {
       const sign = d.invert ? -1 : 1;
       const k = createKnob({
         label: d.label, min: d.min, max: d.max, step: d.step, value: sign * TF_IDENTITY[d.key], reset: sign * TF_IDENTITY[d.key], fmt: d.fmt,
-        hint: d.style ? 'Shapes the selected line, and the next lines you draw' : 'Shapes the selected line',
+        hint: d.info,
         onInput: v => {
           if (!selected() && !d.style) { announce('Select a line first (press V and click it), then turn this knob'); syncLineBar(); return; }
           setDraw(d.key, sign * v, d.style);
         },
       });
       k.el.dataset.path = `draw.${d.key}`;
+      k.el.title = d.info;
       lineKnobs[d.key] = k;
       host.querySelector('.lb-knobs').append(k.el);
     }
     syncLineBar();
+    $('#lb-switch').addEventListener('click', () => {
+      if (selected()) {
+        ui.sel = null;
+        renderKnobStrip();
+        requestRender();
+        announce('Now editing the defaults for new lines');
+      } else {
+        setTool('select');
+        canvas.focus({ preventScroll: true });
+      }
+    });
     $('#lb-reset').addEventListener('click', () => {
       const s = selected();
       if (s) {
@@ -627,7 +658,10 @@
   function syncLineBar() {
     if (!lineKnobs.dx) return;
     const s = selected(), tf = s ? tfOf(s.item) : { ...TF_IDENTITY, ...ui.brushTf };
-    $('#lb-target').textContent = s ? `${toolOf(itemTool(s.item)).label} on ${s.layer.name}` : 'New lines · select one to move or stretch it';
+    $('#line-bar').dataset.target = s ? 'selected' : 'defaults';
+    $('#lb-title').textContent = s ? 'Editing selected' : 'Defaults for new lines';
+    $('#lb-target').textContent = s ? `${toolOf(itemTool(s.item)).label} on ${s.layer.name}` : 'Wave, slope and volume of the next lines you draw';
+    $('#lb-switch').textContent = s ? 'Edit defaults' : 'Select a line (V)';
     for (const d of DRAW_KNOBS) {
       lineKnobs[d.key].set((d.invert ? -1 : 1) * tf[d.key]);
       lineKnobs[d.key].el.classList.toggle('is-idle', !s && !d.style);
@@ -676,8 +710,36 @@
     requestRender();
   }
 
+  // Time snap: Off, or the start and end of what you draw land on 1/4, 1/8 or 1/16 notes.
+  const SNAPS = { off: 0, '1/4': 4, '1/8': 8, '1/16': 16 };
+  const snapUnit = () => (SNAPS[project.snap] ? 1 / (project.bars * SNAPS[project.snap]) : 0);
+  const snapX = x => { const g = snapUnit(); return g ? clamp01(Math.round(x / g) * g) : x; };
+  function snapItem(it) {
+    const g = snapUnit();
+    if (!g) return it;
+    if (it.box) {
+      const [x0, y0, x1, y1] = it.box, a = snapX(Math.min(x0, x1));
+      const b = Math.max(Math.min(1, a + g), snapX(Math.max(x0, x1)));
+      return { ...it, box: [a, y0, b, y1] };
+    }
+    if (it.dots) return { ...it, dots: it.dots.map(([x, y]) => [snapX(x), y]) };
+    if (!it.points) return it;
+    const xs = it.points.map(q => q[0]), x0 = Math.min(...xs), x1 = Math.max(...xs), a = snapX(x0);
+    if (x1 - x0 < 1e-6) return { ...it, points: it.points.map(([, y]) => [a, y]) };
+    const b = Math.max(Math.min(1, a + g), snapX(x1));
+    return { ...it, points: it.points.map(([x, y]) => [a + (x - x0) / (x1 - x0) * (b - a), y]) };
+  }
+  function setSnap(v) {
+    project.snap = v;
+    $('#snap').value = v;
+    save();
+    updateCanvasPos();
+    requestRender();
+  }
+
   function commitItem(item) {
     const layer = current(), style = ui.brushTf;
+    item = Object.assign(item, snapItem(item));
     item.id = uid();
     if (style.waves || style.amp || style.tilt || style.gain !== 1) item.tf = { ...style };
     layer.strokes.push(item);
@@ -708,6 +770,7 @@
   function startDraft(p, kb) {
     unhideForDrawing();
     snapshot();
+    p = [snapX(p[0]), p[1]];
     ui.draft = { tool: ui.tool, size: ui.brush, fill: ui.fill, a: p, b: p, kb };
     if (ui.hear && ui.tool === 'line') engine.monitorStart(current(), p[1]);
     updateEmpty();
@@ -733,6 +796,7 @@
   function moveDraft(p, shift) {
     const d = ui.draft;
     d.b = constrain(d.a, p, shift, d.tool);
+    d.b = [snapX(d.b[0]), d.b[1]];
     if (d.tool === 'line') engine.monitorMove(d.b[1]);
     requestRender();
   }
@@ -850,7 +914,7 @@
     const p = norm(e);
     if (ui.tool === 'select') {
       const hit = selectAt(p);
-      if (hit) ui.moving = { start: p, tf0: tfOf(hit.item), moved: false };
+      if (hit) ui.moving = { start: p, tf0: tfOf(hit.item), x0: Math.min(...ST.itemPoints(hit.item).map(q => q[0])), moved: false };
     } else if (ui.tool === 'erase') {
       snapshot();
       ui.erasing = true;
@@ -873,6 +937,7 @@
   canvas.addEventListener('pointermove', e => {
     const p = norm(e);
     ui.hover = p;
+    updateCanvasPos();
     if (ui.pen && !ui.penKb) {
       const pts = ui.pen.points, last = pts[pts.length - 1];
       if (Math.hypot((p[0] - last[0]) * W, (p[1] - last[1]) * H) >= 2) {
@@ -907,9 +972,22 @@
   }
   canvas.addEventListener('pointerup', endPointer);
   canvas.addEventListener('pointercancel', endPointer);
-  canvas.addEventListener('pointerleave', () => { ui.hover = null; requestRender(); });
+  canvas.addEventListener('pointerleave', () => { ui.hover = null; updateCanvasPos(); requestRender(); });
 
-  // Keyboard drawing: arrows move the cursor, Space/Enter acts with the current tool.
+  // Where am I? Bar.beat and the note under the pointer; otherwise the key, scale and snap.
+  const posEl = $('#canvas-pos');
+  function updateCanvasPos() {
+    const p = ui.hover, scale = SCALES.find(x => x.id === project.scale);
+    const scaleName = project.scale === 'theremin' ? 'continuous pitch' : `C ${scale.label.split('·').pop().trim()}`;
+    if (!p) {
+      posEl.textContent = `${scaleName}${project.snap && project.snap !== 'off' ? ` · snap ${project.snap}` : ''}`;
+      return;
+    }
+    const t = p[0] * L(), beat = Math.floor(t / beatSec() + 1e-6), sixteenth = Math.floor((t / beatSec() - beat) * 4 + 1e-6);
+    posEl.textContent = `${Math.floor(beat / 4) + 1}.${beat % 4 + 1}.${sixteenth + 1} · ${noteName(yToMidi(p[1], project.scale, current().sound.register))}`;
+  }
+
+  // Keyboard drawing: arrows move the cursor, Enter acts with the current tool (Space always plays).
   function describeCursor() {
     const { x, y } = ui.cursor;
     const note = noteName(yToMidi(y, project.scale, current().sound.register));
@@ -929,7 +1007,7 @@
       if (ui.draft && ui.draft.kb) moveDraft([cur.x, cur.y], false);
       speak(describeCursor());
       requestRender();
-    } else if (e.key === ' ' || e.key === 'Enter') {
+    } else if (e.key === 'Enter') {
       e.preventDefault();
       if (e.repeat) return;
       const p = [cur.x, cur.y];
@@ -953,12 +1031,12 @@
         commitSpray();
       } else if (isShapeTool(ui.tool)) {
         if (ui.draft) commitDraft();
-        else { startDraft(p, true); speak('Start point set. Move with the arrow keys, press Space to finish, Escape to cancel.'); }
+        else { startDraft(p, true); speak('Start point set. Move with the arrow keys, press Enter to finish, Escape to cancel.'); }
       } else if (ui.pen) {
         commitPen();
       } else {
         startPen(p, true);
-        speak('Pen down. Move with the arrow keys, press Space to finish, Escape to cancel.');
+        speak('Pen down. Move with the arrow keys, press Enter to finish, Escape to cancel.');
       }
     } else if (e.key === 'Escape' && ui.sel && !ui.pen && !ui.draft) {
       e.stopPropagation();
@@ -1262,6 +1340,7 @@
   $('#toolbox').addEventListener('change', e => setTool(e.target.value));
   $('#fill-seg').addEventListener('change', e => { setFill(e.target.value === 'filled'); announce(ui.fill ? 'Filled shapes play a chord' : 'Outline shapes play their edges'); });
   document.querySelectorAll('input[name="brush"]').forEach(r => r.addEventListener('change', () => { ui.brush = r.value; }));
+  $('#snap').addEventListener('change', e => setSnap(e.target.value));
   $('#undo').addEventListener('click', undo);
   $('#redo').addEventListener('click', redo);
   $('#clear-layer').addEventListener('click', () => {
@@ -1300,6 +1379,8 @@
 
   // ---------- layers ----------
   const layerList = $('#layer-list');
+  const panText = v => (Math.abs(v) < 0.01 ? 'Centre' : `${Math.round(Math.abs(v) * 100)}% ${v < 0 ? 'left' : 'right'}`);
+
   function renderLayers() {
     const focusKey = document.activeElement && document.activeElement.dataset.focusKey;
     layerList.innerHTML = project.layers.map(l => {
@@ -1316,6 +1397,7 @@
             <button type="button" class="msv-btn msv-s" data-act="solo" data-id="${l.id}" data-focus-key="solo-${l.id}" aria-pressed="${l.solo}" aria-label="Solo ${name}" title="Solo: hear only this layer">S</button>
             <button type="button" class="msv-btn msv-v" data-act="hide" data-id="${l.id}" data-focus-key="hide-${l.id}" aria-pressed="${l.hidden}" aria-label="Hide ${name} on the canvas" title="Show or hide on the canvas">${l.hidden ? ICON.eyeOff : ICON.eye}</button>
           </div>
+          <input type="range" class="pan" min="-100" max="100" step="1" value="${Math.round((l.pan || 0) * 100)}" data-act="pan" data-id="${l.id}" data-focus-key="pan-${l.id}" aria-label="${name} pan" aria-valuetext="${panText(l.pan || 0)}" title="Pan: ${panText(l.pan || 0)} (double-click to centre)">
           <input type="range" class="vol" min="0" max="100" value="${Math.round(l.volume * 100)}" data-act="volume" data-id="${l.id}" data-focus-key="vol-${l.id}" aria-label="${name} volume">
           <button type="button" class="icon-btn" data-act="delete" data-id="${l.id}" data-focus-key="del-${l.id}" aria-label="Delete ${name}" title="Delete layer"${project.layers.length === 1 ? ' disabled' : ''}>${ICON.trash}</button>
         </div>
@@ -1326,12 +1408,15 @@
       if (el) el.focus();
     }
     $('#add-layer').disabled = project.layers.length >= MAX_LAYERS;
+    updateDrumState();
+    renderMixer();
+    if (ui.dock) updateDockHint();
   }
 
   const drumKitLabel = d => (d.preset === 'custom' ? 'Custom kit' : (ST.DRUM_KITS.find(k => k.id === d.preset) || { label: 'Kit' }).label);
   function drumMeta() {
     const d = project.drums, style = ST.DRUM_STYLES.find(s => Object.entries(s.v).every(([k, v]) => d[k] === v));
-    return `${drumKitLabel(d)} · ${ST.drumsDrawn(d) ? (style ? style.label : 'your groove') : 'no energy line yet'}`;
+    return `${drumKitLabel(d)} · ${d.muted ? 'Muted' : ST.drumsDrawn(d) ? (style ? style.label : 'your groove') : 'no pattern yet'}`;
   }
   function drumRow() {
     const d = project.drums, sel = ui.drumSel, hidden = $('#drum-body').hidden;
@@ -1346,15 +1431,29 @@
             <button type="button" class="msv-btn msv-s" data-act="solo" data-id="drums" data-focus-key="solo-drums" aria-pressed="${d.solo}" aria-label="Solo drums" title="Solo: hear only the drums">S</button>
             <button type="button" class="msv-btn msv-v" data-act="hide" data-id="drums" data-focus-key="hide-drums" aria-pressed="${hidden}" aria-label="Hide the drum strip" title="Show or hide the drum strip">${hidden ? ICON.eyeOff : ICON.eye}</button>
           </div>
+          <input type="range" class="pan" min="-100" max="100" step="1" value="${Math.round((d.pan || 0) * 100)}" data-act="pan" data-id="drums" data-focus-key="pan-drums" aria-label="Drums pan" aria-valuetext="${panText(d.pan || 0)}" title="Pan: ${panText(d.pan || 0)} (double-click to centre)">
           <input type="range" class="vol" min="0" max="100" value="${Math.round(d.volume * 100)}" data-act="volume" data-id="drums" data-focus-key="vol-drums" aria-label="Drums volume">
         </div>
       </li>`;
   }
-  const updateDrumMeta = () => { const m = layerList.querySelector('.drum-layer .layer-meta'); if (m) m.textContent = drumMeta(); };
+  // "Playing", "Enabled · no pattern yet" or "Muted": never "off" when it is only empty.
+  function drumState() {
+    const d = project.drums;
+    if (d.muted) return 'Muted';
+    if (!ST.drumsDrawn(d)) return 'Enabled · no pattern yet';
+    return engine.playing ? 'Playing' : 'On';
+  }
+  function updateDrumState() {
+    const el = $('#drum-state'), d = project.drums;
+    el.textContent = drumState();
+    el.dataset.state = d.muted ? 'muted' : ST.drumsDrawn(d) ? 'on' : 'empty';
+  }
+  const updateDrumMeta = () => { const m = layerList.querySelector('.drum-layer .layer-meta'); if (m) m.textContent = drumMeta(); updateDrumState(); };
 
   // Selecting the drum layer points the sound cards (Source, ADSR, FX) at the drums.
   function selectDrums() {
     ui.drumSel = true;
+    if (ui.dock) updateDockHint();
     if (ui.panel === 'voice') setPanel(null);
     renderLayers();
     updateCards();
@@ -1438,7 +1537,22 @@
       announce(`${layer.name} deleted. Undo brings it back.`);
     }
   });
+  function setPan(id, v) {
+    const target = id === 'drums' ? project.drums : project.layers.find(l => l.id === id);
+    if (!target) return;
+    target.pan = Math.max(-1, Math.min(1, v));
+    if (id === 'drums') engine.updateDrums(); else engine.updateLayer(target);
+    const input = layerList.querySelector(`.pan[data-id="${id}"]`);
+    if (input) {
+      input.value = Math.round(target.pan * 100);
+      input.setAttribute('aria-valuetext', panText(target.pan));
+      input.title = `Pan: ${panText(target.pan)} (double-click to centre)`;
+    }
+    save();
+  }
+  layerList.addEventListener('dblclick', e => { if (e.target.dataset.act === 'pan') setPan(e.target.dataset.id, 0); });
   layerList.addEventListener('input', e => {
+    if (e.target.dataset.act === 'pan') { setPan(e.target.dataset.id, e.target.value / 100); return; }
     if (e.target.dataset.act !== 'volume') return;
     if (e.target.dataset.id === 'drums') { setDrum('volume', e.target.value / 100); return; }
     const layer = project.layers.find(l => l.id === e.target.dataset.id);
@@ -1567,7 +1681,12 @@
     });
     for (const [key, k] of quickControls) { // an effect's quick knob looks dimmed while it is off
       const [kind, id] = key.split('.');
-      if (kind === 'fx') k.el.classList.toggle('is-off', !l.fx[id].on);
+      if (kind !== 'fx') continue;
+      const on = !!l.fx[id].on, sw = k.el.querySelector('.qk-power');
+      k.el.classList.toggle('is-off', !on);
+      sw.textContent = on ? 'On' : 'Off';
+      sw.setAttribute('aria-pressed', String(on));
+      sw.setAttribute('aria-label', `${FX_BY_ID[id].label} ${on ? 'on' : 'off'} (${l.name})`);
     }
   }
 
@@ -1596,6 +1715,13 @@
           hint: `${d.hint || ''}${fx ? ' Turning it switches the effect on.' : ''} (${who})`, onInput: v => d.set(v),
         });
         k.el.classList.add('knob-mini');
+        if (fx) { // a visible switch: the amount stays when the effect is off
+          const sw = document.createElement('button');
+          sw.type = 'button';
+          sw.className = 'qk-power';
+          sw.dataset.fx = path[1];
+          k.el.append(sw);
+        }
         quickControls.set(pathKey(path), k);
         host.append(k.el);
       }
@@ -1606,6 +1732,7 @@
 
   function setPanel(id) {
     ui.panel = id;
+    if (id && ui.dock !== 'sound') setDockTab('sound');
     document.body.classList.toggle('panel-open', !!id);
     $('#panel').hidden = !id;
     updateCards();
@@ -1614,6 +1741,18 @@
   }
 
   $('#qa-cards').addEventListener('click', e => {
+    const sw = e.target.closest('.qk-power');
+    if (sw) {
+      const l = target(), id = sw.dataset.fx;
+      l.fx[id].on = !l.fx[id].on;
+      if (!isDrums(l)) markCustom(l);
+      engine.updateLayer(l);
+      refreshFxState(id);
+      updateCards();
+      save();
+      announce(`${FX_BY_ID[id].label} ${l.fx[id].on ? 'on' : 'off'}`);
+      return;
+    }
     const card = e.target.closest('.qa-open');
     if (card) setPanel(ui.panel === card.dataset.panel ? null : card.dataset.panel);
   });
@@ -1958,6 +2097,138 @@
     }
   });
 
+  // ---------- dock: Drums | Sound | Mix under the canvas ----------
+  const dockTabs = [...document.querySelectorAll('.dock-tab')];
+  const DOCK_KEY = 'sketchtone.dock';
+  const dockPref = (() => { try { return JSON.parse(localStorage.getItem(DOCK_KEY)) || {}; } catch (e) { return {}; } })();
+  function setDockTab(id, focus) {
+    dockTabs.forEach(t => {
+      const on = t.id === `dt-${id}`;
+      t.setAttribute('aria-selected', String(on));
+      t.tabIndex = on ? 0 : -1;
+      $(`#${t.getAttribute('aria-controls')}`).hidden = !on;
+      if (on && focus) t.focus();
+    });
+    ui.dock = id;
+    document.body.dataset.dock = id;
+    if (id === 'mix') renderMixer();
+    updateDockHint();
+    if (dockCollapsed()) setDockCollapsed(false);
+    try { localStorage.setItem(DOCK_KEY, JSON.stringify({ tab: id, collapsed: dockCollapsed() })); } catch (e) { /* storage unavailable */ }
+  }
+  const dockCollapsed = () => $('#dock-toggle').getAttribute('aria-expanded') === 'false';
+  function setDockCollapsed(c) {
+    const btn = $('#dock-toggle');
+    btn.setAttribute('aria-expanded', String(!c));
+    btn.title = c ? 'Show the panel' : 'Hide the panel (more room to draw)';
+    btn.setAttribute('aria-label', c ? 'Show the panel' : 'Hide the panel');
+    $('#dock-body').hidden = c;
+    document.body.classList.toggle('dock-collapsed', c);
+    try { localStorage.setItem(DOCK_KEY, JSON.stringify({ tab: ui.dock, collapsed: c })); } catch (e) { /* storage unavailable */ }
+  }
+  function updateDockHint() {
+    const t = target();
+    $('#dock-hint').textContent = ui.dock === 'sound' ? `Sound of ${t.name}` : ui.dock === 'drums' ? `Drums · ${drumState()}` : 'Volume, pan and levels';
+  }
+  dockTabs.forEach(t => {
+    t.addEventListener('click', () => setDockTab(t.id.slice(3)));
+    t.addEventListener('keydown', e => {
+      const i = dockTabs.indexOf(t), n = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: dockTabs.length - 1 }[e.key];
+      if (n === undefined) return;
+      e.preventDefault();
+      setDockTab(dockTabs[(n + dockTabs.length) % dockTabs.length].id.slice(3), true);
+    });
+  });
+  $('#dock-toggle').addEventListener('click', () => { setDockCollapsed(!dockCollapsed()); announce(dockCollapsed() ? 'Panel hidden: more room to draw' : 'Panel shown'); });
+
+  // Mix: one strip per layer, the drums and the master. Same values as the layer rows.
+  const mixChannels = () => [
+    ...project.layers.map(l => ({ id: l.id, name: l.name, color: l.color, vol: l.volume, pan: l.pan || 0, muted: l.muted, solo: l.solo, meta: presetLabel(l) })),
+    { id: 'drums', name: 'Drums', color: ST.DRUM_COLOR, vol: project.drums.volume, pan: project.drums.pan || 0, muted: project.drums.muted, solo: project.drums.solo, meta: drumKitLabel(project.drums) },
+  ];
+  function renderMixer() {
+    if (ui.dock !== 'mix') return;
+    const strip = ch => `
+      <div class="mix-strip${ch.muted ? ' is-muted' : ''}" style="--layer:${ch.color}" role="group" aria-label="${esc(ch.name)} channel">
+        <span class="mix-name"><span class="swatch" aria-hidden="true"></span>${esc(ch.name)}</span>
+        <span class="mix-meta">${esc(ch.meta)}</span>
+        <div class="mix-fader-row">
+          <input type="range" class="mix-fader" min="0" max="100" value="${Math.round(ch.vol * 100)}" data-mix="volume" data-id="${ch.id}" aria-label="${esc(ch.name)} volume" aria-orientation="vertical">
+          <div class="mix-meter" aria-hidden="true"><i data-meter="${ch.id}"></i></div>
+        </div>
+        <span class="mix-vol">${Math.round(ch.vol * 100)}%</span>
+        <input type="range" class="pan mix-pan" min="-100" max="100" value="${Math.round(ch.pan * 100)}" data-mix="pan" data-id="${ch.id}" aria-label="${esc(ch.name)} pan" aria-valuetext="${panText(ch.pan)}" title="Pan: ${panText(ch.pan)} (double-click to centre)">
+        <div class="msv" role="group" aria-label="${esc(ch.name)} switches">
+          <button type="button" class="msv-btn msv-m" data-mix="mute" data-id="${ch.id}" aria-pressed="${ch.muted}" aria-label="Mute ${esc(ch.name)}">M</button>
+          <button type="button" class="msv-btn msv-s" data-mix="solo" data-id="${ch.id}" aria-pressed="${ch.solo}" aria-label="Solo ${esc(ch.name)}">S</button>
+        </div>
+      </div>`;
+    $('#mix-strips').innerHTML = mixChannels().map(strip).join('') + `
+      <div class="mix-strip mix-master" role="group" aria-label="Master">
+        <span class="mix-name">Master</span>
+        <span class="mix-meta">Speakers</span>
+        <div class="mix-fader-row">
+          <input type="range" class="mix-fader" min="0" max="100" value="${Math.round(prefs.volume / 0.9 * 100)}" data-mix="master" aria-label="Speaker volume" aria-orientation="vertical">
+          <div class="mix-meter" aria-hidden="true"><i data-meter="master"></i></div>
+        </div>
+        <span class="mix-vol">${Math.round(prefs.volume / 0.9 * 100)}%</span>
+        <span class="mix-meta">Limiter on</span>
+      </div>`;
+  }
+  const mixEl = $('#mix-strips');
+  mixEl.addEventListener('input', e => {
+    const el = e.target, id = el.dataset.id, v = Number(el.value);
+    if (el.dataset.mix === 'pan') { setPan(id, v / 100); el.setAttribute('aria-valuetext', panText(v / 100)); return; }
+    if (el.dataset.mix === 'master') { prefs.volume = v / 100 * 0.9; writeJSON(PREFS_KEY, prefs); applyPrefs(); el.closest('.mix-strip').querySelector('.mix-vol').textContent = `${v}%`; return; }
+    if (el.dataset.mix !== 'volume') return;
+    el.closest('.mix-strip').querySelector('.mix-vol').textContent = `${v}%`;
+    if (id === 'drums') { setDrum('volume', v / 100); return; }
+    const l = project.layers.find(x => x.id === id);
+    l.volume = v / 100;
+    engine.updateLayer(l);
+    const row = layerList.querySelector(`.vol[data-id="${id}"]`);
+    if (row) row.value = v;
+    save();
+  });
+  mixEl.addEventListener('dblclick', e => { if (e.target.dataset.mix === 'pan') { setPan(e.target.dataset.id, 0); renderMixer(); } });
+  mixEl.addEventListener('click', e => {
+    const b = e.target.closest('button[data-mix]');
+    if (!b) return;
+    const id = b.dataset.id, act = b.dataset.mix;
+    if (id === 'drums') { drumRowAct(act); renderMixer(); return; }
+    const l = project.layers.find(x => x.id === id), flag = act === 'mute' ? 'muted' : 'solo';
+    l[flag] = !l[flag];
+    engine.updateAll();
+    renderLayers();
+    requestRender();
+    save();
+    announce(`${l.name} ${flag === 'muted' ? (l.muted ? 'muted' : 'unmuted') : (l.solo ? 'solo' : 'solo off')}`);
+  });
+
+  // ---------- master meter ----------
+  // Peak level after the master limiter; the clip light stays on until you click it.
+  const meterBar = $('#meter-bar'), clipLight = $('#meter-clip');
+  let meterLevel = 0;
+  function meterTick() {
+    const pk = engine.ctx ? engine.peak() : 0;
+    const db = pk > 0 ? 20 * Math.log10(pk) : -96, frac = Math.max(0, Math.min(1, (db + 48) / 48));
+    meterLevel = Math.max(frac, meterLevel - 0.03); // quick rise, slow fall
+    meterBar.style.width = `${(meterLevel * 100).toFixed(1)}%`;
+    meterBar.dataset.zone = meterLevel > 0.9 ? 'hot' : meterLevel > 0.7 ? 'warm' : 'ok';
+    if (pk >= 0.985 && clipLight.hidden) { clipLight.hidden = false; announce('Clipping: the output is too loud. Lower a layer or the drums.'); }
+    if (ui.dock === 'mix' && !dockCollapsed()) {
+      for (const el of mixEl.querySelectorAll('[data-meter]')) {
+        const id = el.dataset.meter, v = id === 'master' ? pk : engine.channelPeak(id);
+        const f = v > 0 ? Math.max(0, Math.min(1, (20 * Math.log10(v) + 48) / 48)) : 0;
+        el.style.height = `${(f * 100).toFixed(1)}%`;
+        el.dataset.zone = f > 0.9 ? 'hot' : f > 0.7 ? 'warm' : 'ok';
+      }
+    }
+    requestAnimationFrame(meterTick);
+  }
+  clipLight.addEventListener('click', () => { clipLight.hidden = true; });
+  requestAnimationFrame(meterTick);
+
   // ---------- transport ----------
   const playBtn = $('#play');
   function barBeat(t) {
@@ -1965,13 +2236,18 @@
     return `bar ${Math.floor(beat / 4) + 1} beat ${beat % 4 + 1}`;
   }
   function updateTransport() {
+    updateDrumState();
     const state = engine.playing ? 'playing' : ui.pausedAt != null ? 'paused' : 'stopped';
     playBtn.classList.toggle('is-playing', state === 'playing');
     playBtn.innerHTML = `${state === 'playing' ? ICON.pause : ICON.play}<span>${state === 'playing' ? 'Pause' : state === 'paused' ? 'Resume' : 'Play'}</span>`;
+    const mini = $('#mini-play'); // the phone bar mirrors the transport
+    mini.classList.toggle('is-playing', state === 'playing');
+    mini.innerHTML = playBtn.innerHTML;
+    if (ui.dock) updateDockHint();
   }
   function updateReadout(t) {
     const beat = Math.floor(t / beatSec() + 1e-6);
-    $('#readout').textContent = `${Math.floor(beat / 4) + 1}.${beat % 4 + 1} / ${project.bars}`;
+    $('#readout').textContent = $('#mini-readout').textContent = `${Math.floor(beat / 4) + 1}.${beat % 4 + 1} / ${project.bars}`;
   }
 
   function frame() {
@@ -2026,6 +2302,8 @@
   }
   playBtn.addEventListener('click', togglePlay);
   $('#stop').addEventListener('click', () => { stopAll(); announce('Stopped'); });
+  $('#mini-play').addEventListener('click', () => playBtn.click());
+  $('#mini-stop').addEventListener('click', () => $('#stop').click());
 
   // Tempo change: keep the same musical position (bar/beat), not the same second.
   function setBpm(v) {
@@ -2051,6 +2329,7 @@
   $('#scale').addEventListener('change', e => {
     project.scale = e.target.value;
     save();
+    updateCanvasPos();
     requestRender();
     announce(project.scale === 'theremin' ? 'Theremin: pitch follows your line exactly' : `Notes snap to the ${project.scale} scale`);
   });
@@ -2128,7 +2407,7 @@
   function updateRecUI() {
     recBtn.setAttribute('aria-pressed', String(!!recording));
     recBtn.classList.toggle('is-recording', !!recording);
-    let label = 'Record';
+    let label = 'Record audio';
     if (recording) {
       const s = Math.floor((performance.now() - recording.started) / 1000);
       label = `Recording ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
@@ -2211,7 +2490,7 @@
   function projectSummary() {
     const lines = project.layers.reduce((a, l) => a + l.strokes.length, 0);
     const secs = L();
-    return `${project.layers.length} ${project.layers.length === 1 ? 'layer' : 'layers'}, ${lines} ${lines === 1 ? 'item' : 'items'} · ${project.bars} ${project.bars === 1 ? 'bar' : 'bars'} at ${project.bpm} BPM (${secs.toFixed(1)} s loop) · drums ${ST.drumsDrawn(project.drums) && !project.drums.muted ? 'on' : 'off'}`;
+    return `${project.layers.length} ${project.layers.length === 1 ? 'layer' : 'layers'}, ${lines} ${lines === 1 ? 'item' : 'items'} · ${project.bars} ${project.bars === 1 ? 'bar' : 'bars'} at ${project.bpm} BPM (${secs.toFixed(1)} s loop) · drums: ${drumState().toLowerCase()}`;
   }
   const versions = () => readJSON(VERSIONS_KEY, []);
   function renderProjectPane() {
@@ -3047,7 +3326,7 @@
   drumCanvas.addEventListener('pointercancel', endDrumPointer);
 
   // Keyboard: Left/Right move one 16th (Shift: a beat), Up/Down change the energy
-  // there, Delete makes a gap, Space puts the line back.
+  // there, Delete makes a gap, Enter puts the line back (Space always plays).
   const energyText = v => (v < 0 ? 'gap, silent' : `energy ${Math.round(v * 100)}%`);
   const drumCursorText = () => `${barBeat(ui.dcur.x * L())}, ${energyText(curveAt(ui.dcur.x))}`;
   let kbEditAt = 0;
@@ -3078,7 +3357,7 @@
       e.preventDefault();
       e.stopPropagation();
       setCurveStep(-1);
-    } else if (e.key === ' ' || e.key === 'Enter') {
+    } else if (e.key === 'Enter') {
       e.preventDefault();
       if (e.repeat) return;
       if (curveAt(cur.x) < 0) setCurveStep(0.6); else speak(drumCursorText());
@@ -3347,10 +3626,10 @@
   // One list drives both the key handler below and the shortcuts popup (press ?).
   const MOD = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl';
   const SHORTCUTS = [
-    ['Play', [['Space', 'Play or pause'], ['Shift Space', 'Play or pause, even on the canvas'], ['Home', 'Stop all sound, back to the start'],
+    ['Play', [['Space', 'Play or pause (also on the canvas)'], ['Shift Space', 'Play or pause from anywhere'], ['Home', 'Stop all sound, back to the start'],
       ['+  −', 'Faster or slower (Shift: by 10 BPM)'], ['Shift L', 'Loop on or off'], ['Shift R', 'Record on or off'], ['C', 'Metronome on or off'], ['H', 'Hear lines while drawing']]],
     ['Draw', [['V P L R O T S E', 'Select, Pencil, Line, Rectangle, Ellipse, Text, Spray, Eraser'], ['F', 'Shapes: outline or filled'],
-      ['[  ]', 'Quieter or louder lines'], ['G', 'Patterns'], ['Arrows', 'Move the pen on the canvas'], ['Space', 'Start or finish a line on the canvas'], ['Esc', 'Cancel, or deselect']]],
+      ['[  ]', 'Quieter or louder lines'], ['Q', 'Time snap: off, 1/16, 1/8, 1/4'], ['G', 'Patterns'], ['Arrows', 'Move the pen on the canvas'], ['Enter', 'Start or finish a line on the canvas'], ['Esc', 'Cancel, or deselect']]],
     ['Edit', [[`${MOD} Z`, 'Undo'], [`Shift ${MOD} Z`, 'Redo'], [`${MOD} C`, 'Copy the selected line'], [`${MOD} V`, 'Paste it on the picked layer'], [`${MOD} D`, 'Duplicate the selected line'], ['Alt arrows', 'Nudge the selected line (Shift: bigger steps)'],
       ['Delete', 'Remove the selected line'], ['Double-click', 'Change the words of a text']]],
     ['Layers', [['1 … 8', 'Pick a layer'], ['D', 'Pick the drum layer'], ['N', 'New layer'], ['M', 'Mute the picked layer'], ['Shift S', 'Solo the picked layer']]],
@@ -3370,7 +3649,7 @@
   function nudgeSelected(key, big) {
     const s = selected();
     if (!s) return false;
-    const steps = project.bars * 16, n = big ? 4 : 1;
+    const steps = snapUnit() ? Math.round(1 / snapUnit()) : project.bars * 16, n = big ? 4 : 1;
     const d = { ArrowLeft: [-n / steps, 0], ArrowRight: [n / steps, 0], ArrowUp: [0, -n / 36], ArrowDown: [0, n / 36] }[key];
     if (performance.now() - knobUndoAt > 1200) snapshot();
     knobUndoAt = performance.now();
@@ -3463,7 +3742,7 @@
       document.querySelector(`.qa-open[data-panel="${id}"]`).focus();
     } else if (e.altKey && e.key.startsWith('Arrow') && free) {
       if (nudgeSelected(e.key, e.shiftKey)) e.preventDefault();
-    } else if (e.key === ' ' && (e.shiftKey ? free : t === document.body || t === tl)) {
+    } else if (e.key === ' ' && (e.shiftKey ? free : t === document.body || t === tl || t === canvas || t === drumCanvas)) {
       e.preventDefault();
       togglePlay();
     } else if (!free) {
@@ -3509,6 +3788,10 @@
       $('#midi-btn').click();
     } else if (k === 'c') {
       metroBtn.click();
+    } else if (k === 'q') {
+      const order = ['off', '1/16', '1/8', '1/4'], next = order[(order.indexOf(project.snap || 'off') + 1) % order.length];
+      setSnap(next);
+      announce(next === 'off' ? 'Snap off: draw freely in time' : `Snap to ${next} notes`);
     } else if (TOOLS.some(x => x.key === k) || k === 'f') {
       if (k === 'f') {
         setFill(!ui.fill);
@@ -3537,6 +3820,8 @@
     $('#scale').value = project.scale;
     $('#loop').checked = project.loop;
     $('#bars').value = String(project.bars);
+    $('#snap').value = project.snap || 'off';
+    updateCanvasPos();
     renderLayers();
     renderReadPanel();
     updateCards();
@@ -3570,6 +3855,8 @@
 
   readTheme();
   applyPrefs();
+  setDockTab(['drums', 'sound', 'mix'].includes(dockPref.tab) ? dockPref.tab : 'drums');
+  if (dockPref.collapsed) setDockCollapsed(true);
   setMetronome(!!prefs.metronome);
   setSaveStatus('saved', hasMusic() ? 'Saved' : '');
   buildCards();
