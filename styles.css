@@ -1058,3 +1058,30 @@ body.panel-open .dock-body { max-height: 58vh; }
 .dock .drum-head { padding: 4px var(--s3); }
 .dock .drum-controls { padding: var(--s2) var(--s3); }
 @media (max-width: 900px) { .line-bar { flex-wrap: wrap; } .lb-head { width: 100%; } }
+
+.key-scale { display: inline-flex; gap: 6px; }
+.key-scale #key { width: 64px; }
+
+/* typing a knob value */
+.knob-out { cursor: text; border-radius: 4px; }
+.knob-out:hover { background: var(--surface-3); color: var(--ink); }
+.knob-edit { width: 72px; height: 22px; padding: 0 4px; border: 1px solid var(--accent); border-radius: 5px; background: var(--surface); color: var(--ink); font: 600 var(--fs-sm) var(--font); text-align: center; box-shadow: 0 0 0 3px var(--accent-soft); -webkit-user-select: text; user-select: text; }
+.knob-edit:focus { outline: none; }
+
+/* your own presets */
+.my-presets { padding: var(--s3); border: 1px dashed var(--line-strong); border-radius: var(--r-md); }
+.my-chip { display: inline-flex; align-items: center; }
+.my-chip .chip { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.my-del { height: 30px; width: 26px; padding: 0; border: 1px solid var(--line-strong); border-left: 0; border-radius: 0 var(--r-pill) var(--r-pill) 0; background: var(--surface); color: var(--ink-3); font-size: 16px; line-height: 1; }
+.my-del:hover { color: var(--danger); }
+.my-save { display: flex; flex-wrap: wrap; gap: 6px; margin-top: var(--s2); }
+.my-save input { height: var(--h-sm); padding: 0 10px; border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--surface); font-size: var(--fs-md); -webkit-user-select: text; user-select: text; }
+
+/* frozen drums */
+.drum-freeze[aria-pressed="true"] { background: #e0f2fe; border-color: #0284c7; color: #075985; }
+:root[data-theme="dark"] .drum-freeze[aria-pressed="true"] { background: #0c4a6e; color: #e0f2fe; }
+.drum-card.is-frozen #drum-macros, .drum-card.is-frozen #drum-styles { opacity: 0.45; }
+.drum-card.is-frozen #drum-canvas { cursor: pointer; }
+
+#note-view svg { width: 16px; height: 16px; }
+#note-view[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }

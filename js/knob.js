@@ -70,6 +70,7 @@
       if (e.key in deltas) commit(current + deltas[e.key] * (e.shiftKey && e.key.startsWith('Arrow') ? 10 : 1));
       else if (e.key === 'Home') commit(min);
       else if (e.key === 'End') commit(max);
+      else if (e.key === 'Enter') openEdit();
       else return;
       e.preventDefault();
     });
@@ -94,6 +95,56 @@
     el.querySelectorAll('.step-btn').forEach(btn => {
       btn.addEventListener('click', () => commit(current + Number(btn.dataset.d) * step));
     });
+
+    // Type an exact value: click the value (or press Enter on the knob), type, Enter.
+    // The text is matched against what the knob shows, so "3" works for "+3 st" and "off" for "Off".
+    const num = t => {
+      const m = String(t).replace(/−/g, '-').match(/[-+]?\d*[.,]?\d+/);
+      return m ? parseFloat(m[0].replace(',', '.')) : NaN;
+    };
+    function valueFromText(text) {
+      const want = text.trim().toLowerCase();
+      if (!want) return null;
+      const n = num(want), span = Math.round((max - min) / step), stride = Math.max(1, Math.ceil(span / 20000));
+      let best = null, bestD = Infinity;
+      for (let i = 0; i <= span; i += stride) {
+        const v = snap(min + i * step), shown = String(fmt(v));
+        if (shown.toLowerCase() === want) return v;
+        const fn = num(shown);
+        if (!Number.isNaN(n) && !Number.isNaN(fn) && Math.abs(fn - n) < bestD) { bestD = Math.abs(fn - n); best = v; }
+      }
+      // No shown value matches (e.g. "75" on a knob that shows "~6 / bar"): use the knob's own range.
+      if (bestD > 1e-9 && !Number.isNaN(n) && n >= min && n <= max && Math.abs(snap(n) - n) < bestD) return snap(n);
+      return best;
+    }
+    function openEdit() {
+      if (el.querySelector('.knob-edit')) return;
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'knob-edit';
+      input.value = fmt(current);
+      input.setAttribute('aria-label', `Type a value for ${label}, then press Enter`);
+      out.hidden = true;
+      out.after(input);
+      input.focus();
+      input.select();
+      let done = false;
+      const close = apply => {
+        if (done) return;
+        done = true;
+        if (apply) { const v = valueFromText(input.value); if (v != null) commit(v); }
+        input.remove();
+        out.hidden = false;
+        knob.focus();
+      };
+      input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); close(true); }
+        else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(false); }
+      });
+      input.addEventListener('blur', () => close(true));
+    }
+    out.addEventListener('click', openEdit);
+    out.title = 'Click to type a value';
 
     paint();
     return { el, set(v) { current = snap(v); paint(); } };

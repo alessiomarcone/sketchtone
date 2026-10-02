@@ -8,18 +8,19 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 28'%3E%3Crect width='28' height='28' rx='8' fill='%235151cd'/%3E%3Cpath d='M5 17c3 0 3-7 6-7s3 9 6 9 3-6 6-6' stroke='white' stroke-width='2.4' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="preload" href="fonts/Inter-Regular.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="fonts/Inter-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
-  <script src="js/theme.js?v=20261003j"></script>
-  <link rel="stylesheet" href="styles.css?v=20261003j">
-  <script defer src="js/sounds.js?v=20261003j"></script>
-  <script defer src="js/fx.js?v=20261003j"></script>
-  <script defer src="js/drums.js?v=20261003j"></script>
-  <script defer src="js/shapes.js?v=20261003j"></script>
-  <script defer src="js/patterns.js?v=20261003j"></script>
-  <script defer src="js/voice.js?v=20261003j"></script>
-  <script defer src="js/audio.js?v=20261003j"></script>
-  <script defer src="js/knob.js?v=20261003j"></script>
-  <script defer src="js/midi.js?v=20261003j"></script>
-  <script defer src="js/app.js?v=20261003j"></script>
+  <script src="js/theme.js?v=20261003q"></script>
+  <link rel="stylesheet" href="styles.css?v=20261003q">
+  <script defer src="js/sounds.js?v=20261003q"></script>
+  <script defer src="js/fx.js?v=20261003q"></script>
+  <script defer src="js/drums.js?v=20261003q"></script>
+  <script defer src="js/shapes.js?v=20261003q"></script>
+  <script defer src="js/patterns.js?v=20261003q"></script>
+  <script defer src="js/voice.js?v=20261003q"></script>
+  <script defer src="js/exporters.js?v=20261003q"></script>
+  <script defer src="js/audio.js?v=20261003q"></script>
+  <script defer src="js/knob.js?v=20261003q"></script>
+  <script defer src="js/midi.js?v=20261003q"></script>
+  <script defer src="js/app.js?v=20261003q"></script>
 </head>
 <body>
   <a class="skip-link" href="#canvas">Skip to drawing area</a>
@@ -81,6 +82,11 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="7.5" cy="16" r="1.8" fill="currentColor"/><circle cx="16.5" cy="16" r="1.8" fill="currentColor"/><path d="M7 11l3-3 3 2 4-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
           Etch mode
         </button>
+        <button type="button" class="btn btn-small" id="note-view" aria-pressed="false" title="See this layer as notes on a grid">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h7M13 10h6M6 14h8M14 18h5" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>
+          Notes
+        </button>
+        <button type="button" class="btn btn-small" id="quantize" hidden title="Snap the start and end of every line on this layer to the grid">Quantize</button>
         <button type="button" class="btn btn-small pattern-toggle" id="pattern-toggle" aria-pressed="false" aria-controls="pattern-bar" title="Generate repeating patterns and ready-made lines">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h3M10 7h3M16 7h4M4 12h5M12 12h3M18 12h2M4 17h2M9 17h4M16 17h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
           Patterns
@@ -156,10 +162,10 @@
             <span id="bpm-label">BPM</span>
             <button type="button" class="step-btn-light" id="bpm-up" aria-label="Faster">+</button>
           </div>
-          <label class="select-label">
-            <span class="sr-only">Pitch mode</span>
-            <select id="scale"></select>
-          </label>
+<div class="key-scale">
+            <label class="select-label"><span class="sr-only">Root key</span><select id="key" title="Root key: the note every scale starts on"></select></label>
+            <label class="select-label"><span class="sr-only">Pitch mode</span><select id="scale"></select></label>
+          </div>
         </div>
         <div class="transport-row">
           <label class="check"><input type="checkbox" id="loop" checked>Loop</label>
@@ -298,6 +304,7 @@
             <button type="button" class="btn btn-small" id="drum-dice" title="Same knobs, new groove">Roll dice</button>
             <button type="button" class="btn btn-small" id="drum-keep" title="Keep this groove, then blend back to it with Morph">Keep groove</button>
             <button type="button" class="btn btn-small" id="drum-clear">Clear</button>
+            <button type="button" class="btn btn-small drum-freeze" id="drum-freeze" aria-pressed="false" title="Freeze the groove into fixed hits you can edit one by one">Freeze</button>
             <span class="toolbar-spacer"></span>
             <button type="button" class="btn btn-small drum-mpk" id="drum-mpk" aria-pressed="false" title="Turn K1 to K8 on your controller into the drum knobs">MPK knobs: drums</button>
             <label class="check"><input type="checkbox" id="drum-on" checked>Enabled</label>
@@ -429,6 +436,8 @@
             <p class="ad-meta" id="ad-export-info"></p>
             <div class="ad-row">
               <button type="button" class="btn ad-primary" id="ad-export">Export WAV</button>
+              <button type="button" class="btn" id="ad-stems" title="One WAV per layer and the drums, same length, in a .zip">Stems (.zip)</button>
+              <button type="button" class="btn" id="ad-midi" title="The drawn notes and the drum hits as a MIDI file for any DAW">MIDI (.mid)</button>
               <progress id="ad-progress" max="1" value="0" hidden></progress>
               <span class="ad-meta" id="ad-export-status" role="status"></span>
             </div>

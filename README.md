@@ -10,14 +10,14 @@
 
 - **Draw sound** with a Paint-style toolbox: pencil, line, rectangle, ellipse, spray and eraser. Shapes play chords, spray plays short sparkles.
 - **Sing with text.** The Text brush types words on the canvas and a robot voice sings them, autotuned to the scale, following the slope of the words.
-- **Shape any line** with eight knobs always at hand under the toolbar (time offset, transpose, wave cycles and depth, time and pitch stretch, slope, volume). With nothing selected they set the defaults for new lines. Time snap (1/4, 1/8, 1/16) keeps rhythms tight; a ruler and a position readout show bar, beat and note.
+- **Shape any line** with eight knobs always at hand under the toolbar (time offset, transpose, wave cycles and depth, time and pitch stretch, slope, volume). With nothing selected they set the defaults for new lines. Time snap (1/4, 1/8, 1/16) keeps rhythms tight; a ruler and a position readout show bar, beat and note; pick the root key for every scale. Box-select several lines (Shift-click to add) and drag side handles to stretch them in time or pitch. The **Notes** view shows a layer as notes on a grid, with Quantize.
 - **Generate patterns** when you don't want to draw (press G): repeat a motif across the loop (rows for chords, climb for arpeggios, brick for off-beats), or start from presets like Arpeggio, Heartbeat or Bouncing ball.
-- **Generative drums.** Draw an energy line, turn eight knobs (kicks, snares, hats, percs, fills, gaps, dirt, evolve) and the drummer writes the groove, with fills and drop-outs that change every phrase.
-- **Shape the sound** on every layer with knobs: 22 presets, source, envelope, 19 effects and voice effects. The drums are a layer too, with their own kits and effects.
+- **Generative drums.** Draw an energy line, turn eight knobs (kicks, snares, hats, percs, fills, gaps, dirt, evolve) and the drummer writes the groove, with fills and drop-outs that change every phrase. **Freeze** it to fix the hits, then click to add or remove hits, Shift-click for louder, Alt-click for "sometimes".
+- **Shape the sound** on every layer with knobs (click a value to type it exactly): 22 presets plus your own saved sounds and drum kits, source, envelope, 19 effects and voice effects. The drums are a layer too, with their own kits and effects.
 - **Play live.** Edits change the sound while it plays. Read modes reverse, ping-pong or slice the loop.
 - **Plug in a controller.** Tuned for the Akai MPK Mini: knobs reshape lines, pads jump to slices, keys hold effect presets (with a default for every key, locked to the beat or the bar so they never land out of time), the joystick bends pitch.
 - **Mix** in the Mix tab: volume, pan, mute, solo and a live meter per layer and for the drums, plus a master meter with a clip light.
-- **Keep and share your work.** The sketch saves itself in the browser. Save versions, download a project file, record live, or export a WAV of any length (rendered offline with a fade-out).
+- **Keep and share your work.** The sketch saves itself in the browser. Save versions, download a project file, record live, export a WAV of any length (rendered offline with a fade-out), **stems** (one WAV per layer and drums, in a .zip) or a **MIDI file** for any DAW.
 
 ## Run it
 

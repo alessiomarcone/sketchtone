@@ -89,11 +89,28 @@
     return out;
   };
   const clamp01 = v => Math.min(1, Math.max(0, v));
-  const drawn = d => d.curve.some(v => v >= 0);
+  const drawn = d => (d.frozen ? (d.pattern || []).length > 0 : d.curve.some(v => v >= 0));
 
   // Every hit of loop pass k: { id, lane, t, vel, dirt, tune, step, fill }.
   // `melody` (optional) is how busy and high the melody is on each 16th, 0..1.
+  // A frozen groove: fixed hits you can edit, still with swing, dirt and per-hit chance.
+  function frozenHits(d, bars, L, k) {
+    const steps = bars * 16, stepDur = L / steps, out = [];
+    out.fills = [];
+    out.stops = [];
+    const dirt = d.dirt / 100;
+    for (const h of d.pattern || []) {
+      if (h.step >= steps) continue;
+      if (h.prob < 1 && rnd(d.seed, 0xf2, k, h.step, h.lane) >= h.prob) continue;
+      const swing = h.step % 2 ? d.swing / 100 * stepDur * 0.5 : 0;
+      const grit = dirt ? Math.min(1, dirt * (0.35 + h.vel * 0.8)) : 0;
+      out.push({ id: DRUMS[h.lane].id, lane: h.lane, t: h.step * stepDur + swing, vel: h.vel, dirt: grit, step: h.step, tune: h.tune || 1 });
+    }
+    return out;
+  }
+
   function drumHits(d, bars, L, k, melody) {
+    if (d.frozen) return frozenHits(d, bars, L, k);
     const steps = bars * 16, stepDur = L / steps, out = [];
     out.fills = [];
     out.stops = [];

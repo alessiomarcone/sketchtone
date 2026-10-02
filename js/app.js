@@ -51,12 +51,12 @@
 
   function newProject() {
     const layer = makeLayer(1);
-    return { name: 'Untitled sketch', bpm: 122, bars: 4, scale: 'pentatonic', snap: 'off', loop: true, layerCount: 1, selected: layer.id, layers: [layer], drums: ST.defaultDrums() };
+    return { name: 'Untitled sketch', bpm: 122, bars: 4, scale: 'pentatonic', key: 0, snap: 'off', loop: true, layerCount: 1, selected: layer.id, layers: [layer], drums: ST.defaultDrums() };
   }
 
   function normalize(p) {
     const base = newProject();
-    for (const k of ['bpm', 'bars', 'scale', 'loop', 'name', 'layerCount', 'snap']) if (p[k] === undefined) p[k] = base[k];
+    for (const k of ['bpm', 'bars', 'scale', 'key', 'loop', 'name', 'layerCount', 'snap']) if (p[k] === undefined) p[k] = base[k];
     p.drums = ST.migrateDrums(p.drums);
     const fxBase = defaultFx();
     p.layers.forEach(l => {
@@ -145,7 +145,11 @@
   const isDrums = t => t === project.drums;
   const hasStrokes = () => project.layers.some(l => l.strokes.length);
   const hasMusic = () => hasStrokes() || (!project.drums.muted && ST.drumsDrawn(project.drums)); // anything to play or export
-  const presetLabel = l => (PRESETS[l.preset] ? PRESETS[l.preset].label : 'Custom sound');
+  // Your own presets live in this browser: sounds for layers, kits for the drums.
+  const MY_SOUNDS = 'sketchtone.mysounds.v1', MY_KITS = 'sketchtone.mykits.v1';
+  const myList = key => { try { return JSON.parse(localStorage.getItem(key)) || []; } catch (e) { return []; } };
+  const myFind = (key, preset) => (typeof preset === 'string' && preset.startsWith('my:') ? myList(key).find(x => x.id === preset.slice(3)) : null);
+  const presetLabel = l => (PRESETS[l.preset] ? PRESETS[l.preset].label : (myFind(MY_SOUNDS, l.preset) || {}).name || 'Custom sound');
   const modeOf = id => READ_MODES.find(m => m.id === id);
   const activeFx = (l, group) => FX_GROUPS[group].filter(id => l.fx[id].on);
 
@@ -296,11 +300,26 @@
         drawItem(st, layer.color, alpha, head != null && !layer.muted && head >= a && head <= b);
       }
     }
+    if (ui.noteView) drawNoteView(sel);
     if (ui.pen) drawItem(ui.pen, sel.color, 1, false);
     if (ui.draft) drawItem(draftItem(ui.draft), sel.color, 0.85, false);
     if (ui.spray) drawItem(ui.spray.item, sel.color, 1, false);
     const picked = selected();
-    if (picked && !picked.layer.hidden && !ui.pen && !ui.draft) drawSelection(picked.item);
+    if (picked && !picked.layer.hidden && !ui.pen && !ui.draft) {
+      const all = selectedItems();
+      for (const { item } of all) drawSelection(item, all.length === 1);
+    }
+    if (ui.marquee) { // box select
+      const { a, b } = ui.marquee;
+      c2d.strokeStyle = theme.accent;
+      c2d.fillStyle = theme.accent;
+      c2d.globalAlpha = 0.08;
+      c2d.fillRect(Math.min(a[0], b[0]) * W, Math.min(a[1], b[1]) * H, Math.abs(b[0] - a[0]) * W, Math.abs(b[1] - a[1]) * H);
+      c2d.globalAlpha = 1;
+      c2d.setLineDash([4, 3]);
+      c2d.strokeRect(Math.min(a[0], b[0]) * W, Math.min(a[1], b[1]) * H, Math.abs(b[0] - a[0]) * W, Math.abs(b[1] - a[1]) * H);
+      c2d.setLineDash([]);
+    }
 
     // read heads of layers that don't read left to right
     if (pos) {
@@ -347,6 +366,36 @@
       c.setLineDash(ui.tool === 'spray' ? [3, 3] : []);
       c.beginPath(); c.arc(ui.hover[0] * W, ui.hover[1] * H, r, 0, Math.PI * 2); c.stroke();
       c.setLineDash([]);
+    }
+  }
+
+  // Note view: the current layer's lines read as notes on a grid, like a piano roll.
+  // A view only: you still draw and edit on the canvas; Quantize snaps start and end times.
+  function drawNoteView(layer) {
+    const c = c2d, len = L(), shift = REGISTER[layer.sound.register] || 0, row = H / 36;
+    c.globalAlpha = 0.72;
+    c.fillStyle = theme.paper;
+    c.fillRect(0, 0, W, H);
+    c.globalAlpha = 1;
+    c.font = '600 10px Inter, system-ui, sans-serif';
+    c.textBaseline = 'middle';
+    for (const n of ST.collectNotes(layer, 0, len, project.scale)) {
+      let segStart = 0, cur = Math.round(n.midis[0]);
+      const block = end => {
+        const x = (n.start + segStart) / len * W, w = Math.max(2, (end - segStart) / len * W), y = (1 - (cur - shift - 48) / 36) * H - row / 2;
+        c.globalAlpha = 0.35 + 0.65 * Math.min(1, n.peak / 0.85);
+        c.fillStyle = layer.color;
+        c.beginPath();
+        c.roundRect ? c.roundRect(x, y, w, Math.max(4, row - 1), 3) : c.rect(x, y, w, Math.max(4, row - 1));
+        c.fill();
+        c.globalAlpha = 1;
+        if (w > 28 && row >= 9) { c.fillStyle = '#fff'; c.fillText(noteName(cur), x + 4, y + row / 2); }
+      };
+      for (let i = 1; i < n.times.length; i++) {
+        const m = Math.round(n.midis[i]);
+        if (m !== cur) { block(n.times[i]); segStart = n.times[i]; cur = m; }
+      }
+      block(n.dur);
     }
   }
 
@@ -520,11 +569,21 @@
   }
 
   // Items are replaced, never mutated, so cached geometry and notes stay valid.
-  function replaceSelected(fn) {
+  // Everything selected: the primary item plus any extras (box select, Shift-click), same layer.
+  function selectedItems() {
     const s = selected();
-    if (!s) return;
-    s.layer.strokes[s.layer.strokes.indexOf(s.item)] = fn(s.item);
+    if (!s) return [];
+    const ids = new Set([s.item.id, ...(ui.extraFor === s.item.id ? ui.extra || [] : [])]); // extras belong to this primary only
+    return s.layer.strokes.filter(it => ids.has(it.id)).map(item => ({ layer: s.layer, item }));
   }
+  function replaceSelected(fn) {
+    for (const { layer, item } of selectedItems()) layer.strokes[layer.strokes.indexOf(item)] = fn(item);
+  }
+  const boundsOf = it => {
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const [x, y] of ST.itemPoints(it)) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+    return { x0, x1, y0, y1 };
+  };
 
   function hitItem(it, p) {
     const toPx = q => [q[0] * W, q[1] * H], P = toPx(p);
@@ -548,8 +607,20 @@
     return null;
   }
 
-  function selectAt(p) {
+  function selectAt(p, add) {
     const hit = itemAt(p);
+    if (add && hit && ui.sel && hit.layer.id === ui.sel.layerId) { // Shift-click: add or remove
+      const extra = new Set(ui.extra || []);
+      if (hit.item.id === ui.sel.id) { if (extra.size) { ui.sel = { layerId: hit.layer.id, id: [...extra][0] }; extra.delete(ui.sel.id); } }
+      else if (extra.has(hit.item.id)) extra.delete(hit.item.id); else extra.add(hit.item.id);
+      ui.extra = [...extra];
+      ui.extraFor = ui.sel.id;
+      announce(`${selectedItems().length} selected`);
+      renderKnobStrip();
+      requestRender();
+      return hit;
+    }
+    ui.extra = [];
     if (!hit) {
       if (ui.sel) announce('Nothing selected: the knobs now shape new lines');
       ui.sel = null;
@@ -563,25 +634,45 @@
     return hit;
   }
 
+  // Box select: every visible item of the current layer that touches the box.
+  function finishMarquee() {
+    const { a, b } = ui.marquee, layer = current();
+    ui.marquee = null;
+    const bx0 = Math.min(a[0], b[0]), bx1 = Math.max(a[0], b[0]), by0 = Math.min(a[1], b[1]), by1 = Math.max(a[1], b[1]);
+    if ((bx1 - bx0) * W < 4 && (by1 - by0) * H < 4) { requestRender(); return; }
+    const inside = layer.hidden ? [] : layer.strokes.filter(it => { const r = boundsOf(it); return r.x1 >= bx0 && r.x0 <= bx1 && r.y1 >= by0 && r.y0 <= by1; });
+    if (!inside.length) { ui.sel = null; ui.extra = []; announce('Nothing in the box'); }
+    else {
+      ui.sel = { layerId: layer.id, id: inside[0].id };
+      ui.extra = inside.slice(1).map(it => it.id);
+      ui.extraFor = ui.sel.id;
+      announce(`${inside.length} selected on ${layer.name}: move, copy, duplicate, nudge or delete them together`);
+    }
+    renderKnobStrip();
+    requestRender();
+  }
+
   function moveSelected(p) {
     const m = ui.moving;
     if (!m.moved) { snapshot(); m.moved = true; }
     const dx = snapUnit() ? snapX(m.x0 + p[0] - m.start[0]) - m.x0 : p[0] - m.start[0]; // the start lands on the grid
-    replaceSelected(it => ({ ...it, tf: { ...m.tf0, dx: m.tf0.dx + dx, dy: m.tf0.dy + p[1] - m.start[1] } }));
+    replaceSelected(it => { const tf0 = m.tf0s.get(it.id) || tfOf(it); return { ...it, tf: { ...tf0, dx: tf0.dx + dx, dy: tf0.dy + p[1] - m.start[1] } }; });
     save();
     syncLineBar();
     requestRender();
   }
 
   function deleteSelected() {
-    const s = selected();
-    if (!s) return;
+    const all = selectedItems();
+    if (!all.length) return;
     snapshot();
-    s.layer.strokes = s.layer.strokes.filter(it => it !== s.item);
+    const gone = new Set(all.map(x => x.item));
+    all[0].layer.strokes = all[0].layer.strokes.filter(it => !gone.has(it));
     ui.sel = null;
+    ui.extra = [];
     refreshAfterEdit();
     renderKnobStrip();
-    announce('Deleted. Undo brings it back.');
+    announce(`${gone.size === 1 ? 'Deleted' : `${gone.size} deleted`}. Undo brings it back.`);
   }
 
   let knobUndoAt = 0;
@@ -632,6 +723,7 @@
     $('#lb-switch').addEventListener('click', () => {
       if (selected()) {
         ui.sel = null;
+        ui.extra = [];
         renderKnobStrip();
         requestRender();
         announce('Now editing the defaults for new lines');
@@ -660,7 +752,8 @@
     const s = selected(), tf = s ? tfOf(s.item) : { ...TF_IDENTITY, ...ui.brushTf };
     $('#line-bar').dataset.target = s ? 'selected' : 'defaults';
     $('#lb-title').textContent = s ? 'Editing selected' : 'Defaults for new lines';
-    $('#lb-target').textContent = s ? `${toolOf(itemTool(s.item)).label} on ${s.layer.name}` : 'Wave, slope and volume of the next lines you draw';
+    const many = s ? selectedItems().length : 0;
+    $('#lb-target').textContent = s ? (many > 1 ? `${many} items on ${s.layer.name}` : `${toolOf(itemTool(s.item)).label} on ${s.layer.name}`) : 'Wave, slope and volume of the next lines you draw';
     $('#lb-switch').textContent = s ? 'Edit defaults' : 'Select a line (V)';
     for (const d of DRAW_KNOBS) {
       lineKnobs[d.key].set((d.invert ? -1 : 1) * tf[d.key]);
@@ -669,10 +762,22 @@
     $('#lb-reset').disabled = s ? !ST.hasTf(s.item) : isStyleDefault();
   }
 
-  function drawSelection(it) {
-    const c = c2d, pts = ST.itemPoints(it);
-    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
-    for (const [x, y] of pts) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+  // Side handles of the selection box (screen pixels): left/right stretch time, top/bottom pitch.
+  function selectionHandles(it) {
+    const { x0, x1, y0, y1 } = boundsOf(it), pad = 8 + (LINE_WIDTH[it.size] || 6) / 2;
+    const X0 = x0 * W - pad, Y0 = y0 * H - pad, X1 = x1 * W + pad, Y1 = y1 * H + pad;
+    return { l: [X0, (Y0 + Y1) / 2], r: [X1, (Y0 + Y1) / 2], t: [(X0 + X1) / 2, Y0], b: [(X0 + X1) / 2, Y1] };
+  }
+  function handleAt(p) {
+    const all = selectedItems();
+    if (all.length !== 1 || all[0].layer.hidden) return null;
+    const hs = selectionHandles(all[0].item), P = [p[0] * W, p[1] * H];
+    for (const k in hs) if (Math.abs(hs[k][0] - P[0]) <= 9 && Math.abs(hs[k][1] - P[1]) <= 9) return k;
+    return null;
+  }
+  function drawSelection(it, handles) {
+    const c = c2d;
+    const { x0, x1, y0, y1 } = boundsOf(it);
     const pad = 8 + (LINE_WIDTH[it.size] || 6) / 2;
     const X0 = x0 * W - pad, Y0 = y0 * H - pad, X1 = x1 * W + pad, Y1 = y1 * H + pad;
     c.strokeStyle = theme.accent;
@@ -681,7 +786,32 @@
     c.setLineDash([5, 4]);
     c.strokeRect(X0, Y0, X1 - X0, Y1 - Y0);
     c.setLineDash([]);
-    for (const [x, y] of [[X0, Y0], [X1, Y0], [X0, Y1], [X1, Y1]]) c.fillRect(x - 3, y - 3, 6, 6);
+    if (!handles) return;
+    c.fillStyle = theme.paper;
+    c.lineWidth = 2;
+    for (const [x, y] of Object.values(selectionHandles(it))) { c.fillRect(x - 5, y - 5, 10, 10); c.strokeRect(x - 5, y - 5, 10, 10); }
+    c.lineWidth = 1;
+  }
+
+  // Drag a side handle: stretch in time (left/right) or pitch (top/bottom); the other side stays put.
+  function resizeSelected(p) {
+    const r = ui.resizing, b0 = r.b0, tf0 = r.tf0;
+    if (!r.moved) { snapshot(); r.moved = true; }
+    let { sx, sy } = tf0;
+    if (r.edge === 'l' || r.edge === 'r') {
+      const x = snapX(p[0]), w0 = Math.max(0.002, b0.x1 - b0.x0), w = r.edge === 'r' ? x - b0.x0 : b0.x1 - x;
+      sx = Math.max(0.1, Math.min(3, tf0.sx * Math.max(0.004, w) / w0));
+    } else {
+      const h0 = Math.max(0.002, b0.y1 - b0.y0), h = r.edge === 'b' ? p[1] - b0.y0 : b0.y1 - p[1];
+      sy = Math.max(-2, Math.min(3, tf0.sy * Math.max(0.004, h) / h0));
+    }
+    const trial = { ...r.item0, tf: { ...tf0, sx, sy } }, nb = boundsOf(trial);
+    const dx = r.edge === 'r' ? b0.x0 - nb.x0 : r.edge === 'l' ? b0.x1 - nb.x1 : 0;
+    const dy = r.edge === 'b' ? b0.y0 - nb.y0 : r.edge === 't' ? b0.y1 - nb.y1 : 0;
+    replaceSelected(it => ({ ...it, tf: { ...tf0, sx, sy, dx: tf0.dx + dx, dy: tf0.dy + dy } }));
+    save();
+    syncLineBar();
+    requestRender();
   }
 
   // ---------- drawing input ----------
@@ -913,8 +1043,18 @@
     if (ui.drumSel) selectLayer(project.selected); // drawing is always on a canvas layer
     const p = norm(e);
     if (ui.tool === 'select') {
-      const hit = selectAt(p);
-      if (hit) ui.moving = { start: p, tf0: tfOf(hit.item), x0: Math.min(...ST.itemPoints(hit.item).map(q => q[0])), moved: false };
+      const edge = handleAt(p);
+      if (edge) {
+        const it = selected().item;
+        ui.resizing = { edge, item0: it, tf0: tfOf(it), b0: boundsOf(it), moved: false };
+        return;
+      }
+      const already = ui.sel && selectedItems().some(x => x.item === (itemAt(p) || {}).item);
+      const hit = already && !e.shiftKey ? itemAt(p) : selectAt(p, e.shiftKey);
+      if (hit && !e.shiftKey) {
+        const all = selectedItems();
+        ui.moving = { start: p, tf0s: new Map(all.map(x => [x.item.id, tfOf(x.item)])), x0: Math.min(...all.flatMap(x => ST.itemPoints(x.item).map(q => q[0]))), moved: false };
+      } else if (!hit) ui.marquee = { a: p, b: p };
     } else if (ui.tool === 'erase') {
       snapshot();
       ui.erasing = true;
@@ -937,6 +1077,10 @@
   canvas.addEventListener('pointermove', e => {
     const p = norm(e);
     ui.hover = p;
+    if (ui.tool === 'select' && !ui.moving && !ui.resizing) {
+      const h = handleAt(p);
+      canvas.style.cursor = h ? (h === 'l' || h === 'r' ? 'ew-resize' : 'ns-resize') : '';
+    }
     updateCanvasPos();
     if (ui.pen && !ui.penKb) {
       const pts = ui.pen.points, last = pts[pts.length - 1];
@@ -946,6 +1090,10 @@
       }
     } else if (ui.draft && !ui.draft.kb) {
       moveDraft(p, e.shiftKey);
+    } else if (ui.resizing) {
+      resizeSelected(p);
+    } else if (ui.marquee) {
+      ui.marquee.b = p;
     } else if (ui.moving) {
       moveSelected(p);
     } else if (ui.spray) {
@@ -957,6 +1105,12 @@
   });
 
   function endPointer() {
+    if (ui.resizing) {
+      const r = ui.resizing;
+      ui.resizing = null;
+      if (r.moved) { refreshAfterEdit(); announce(r.edge === 'l' || r.edge === 'r' ? 'Stretched in time' : 'Stretched in pitch'); }
+    }
+    if (ui.marquee) finishMarquee();
     if (ui.moving) {
       const m = ui.moving;
       ui.moving = null;
@@ -978,7 +1132,7 @@
   const posEl = $('#canvas-pos');
   function updateCanvasPos() {
     const p = ui.hover, scale = SCALES.find(x => x.id === project.scale);
-    const scaleName = project.scale === 'theremin' ? 'continuous pitch' : `C ${scale.label.split('·').pop().trim()}`;
+    const scaleName = project.scale === 'theremin' ? 'continuous pitch' : `${ST.KEY_NAMES[project.key || 0]} ${scale.label.split('·').pop().trim()}`;
     if (!p) {
       posEl.textContent = `${scaleName}${project.snap && project.snap !== 'off' ? ` · snap ${project.snap}` : ''}`;
       return;
@@ -1341,6 +1495,28 @@
   $('#fill-seg').addEventListener('change', e => { setFill(e.target.value === 'filled'); announce(ui.fill ? 'Filled shapes play a chord' : 'Outline shapes play their edges'); });
   document.querySelectorAll('input[name="brush"]').forEach(r => r.addEventListener('change', () => { ui.brush = r.value; }));
   $('#snap').addEventListener('change', e => setSnap(e.target.value));
+  $('#note-view').addEventListener('click', () => {
+    ui.noteView = !ui.noteView;
+    $('#note-view').setAttribute('aria-pressed', String(ui.noteView));
+    $('#quantize').hidden = !ui.noteView;
+    requestRender();
+    announce(ui.noteView ? `Note view: ${current().name} as notes on a grid. Quantize snaps them to the beat.` : 'Drawing view');
+  });
+  $('#quantize').addEventListener('click', () => {
+    const layer = current();
+    if (!layer.strokes.length) { announce('Nothing to quantize on this layer'); return; }
+    const was = project.snap;
+    if (!snapUnit()) project.snap = '1/16'; // quantize needs a grid: 1/16 when snap is off
+    snapshot();
+    layer.strokes = layer.strokes.map(it => {
+      if (it.kind === 'text' || !ST.hasTf(it)) return { ...snapItem(it), id: it.id };
+      const tf = tfOf(it), b = boundsOf(it), g = snapUnit(); // keep transforms: move the whole item so its start lands on the grid
+      return { ...it, tf: { ...tf, dx: tf.dx + (Math.round(b.x0 / g) * g - b.x0) } };
+    });
+    project.snap = was;
+    refreshAfterEdit();
+    announce(`${layer.name} quantized to ${was && was !== 'off' ? was : '1/16'} notes. Undo brings the free timing back.`);
+  });
   $('#undo').addEventListener('click', undo);
   $('#redo').addEventListener('click', redo);
   $('#clear-layer').addEventListener('click', () => {
@@ -1413,7 +1589,7 @@
     if (ui.dock) updateDockHint();
   }
 
-  const drumKitLabel = d => (d.preset === 'custom' ? 'Custom kit' : (ST.DRUM_KITS.find(k => k.id === d.preset) || { label: 'Kit' }).label);
+  const drumKitLabel = d => (d.preset === 'custom' ? 'Custom kit' : (myFind(MY_KITS, d.preset) || {}).name || (ST.DRUM_KITS.find(k => k.id === d.preset) || { label: 'Kit' }).label);
   function drumMeta() {
     const d = project.drums, style = ST.DRUM_STYLES.find(s => Object.entries(s.v).every(([k, v]) => d[k] === v));
     return `${drumKitLabel(d)} · ${d.muted ? 'Muted' : ST.drumsDrawn(d) ? (style ? style.label : 'your groove') : 'no pattern yet'}`;
@@ -1440,6 +1616,7 @@
   function drumState() {
     const d = project.drums;
     if (d.muted) return 'Muted';
+    if (d.frozen) return `${engine.playing ? 'Playing' : 'On'} · frozen`;
     if (!ST.drumsDrawn(d)) return 'Enabled · no pattern yet';
     return engine.playing ? 'Playing' : 'On';
   }
@@ -1766,6 +1943,22 @@
       </div>
     </fieldset>`;
 
+  function myPresetsBlock(key, l, title, noun) {
+    const list = myList(key);
+    return `
+        <div class="field my-presets" data-my-key="${key}">
+          <span class="field-label" id="my-${noun}-label">${title}</span>
+          <div class="chips" role="group" aria-labelledby="my-${noun}-label">${list.length ? list.map(x => `
+            <span class="my-chip"><button type="button" class="chip" data-my="${x.id}" aria-pressed="${l.preset === `my:${x.id}`}">${esc(x.name)}</button><button type="button" class="my-del" data-my-del="${x.id}" aria-label="Delete ${esc(x.name)}" title="Delete">×</button></span>`).join('')
+            : `<span class="fx-note">Shape a ${noun} you like, then save it here to reuse it in every project.</span>`}
+          </div>
+          <div class="my-save">
+            <input type="text" maxlength="30" placeholder="Name this ${noun}" aria-label="Name for your ${noun}" data-my-name>
+            <button type="button" class="dev-btn" data-my-save>Save as my ${noun}</button>
+          </div>
+        </div>`;
+  }
+
   const DRUM_INTRO = {
     source: 'The kit and its character: every drum follows these.',
     envelope: 'How every hit starts, holds and rings out.',
@@ -1785,7 +1978,8 @@
           <div class="chips" role="group" aria-labelledby="preset-label">${ST.DRUM_KITS.map(k =>
             `<button type="button" class="chip" data-kit="${k.id}" aria-pressed="${l.preset === k.id}">${k.label}</button>`).join('')}
           </div>
-        </div>`;
+        </div>
+        ${myPresetsBlock(MY_KITS, l, 'My kits', 'kit')}`;
     } else if (def.vox) {
       const v = voxOf(l);
       top = `<div class="vox-choices">${Object.entries(ST.VOX_CHOICES).map(([key, c]) => `
@@ -1811,6 +2005,7 @@
             </div>`).join('')}
           </div>
         </div>
+        ${myPresetsBlock(MY_SOUNDS, l, 'My sounds', 'sound')}
         <div class="source-row">
           ${radioGroup('wave', 'Waveform', WAVES, l.sound.wave)}
           ${radioGroup('register', 'Pitch range', REGISTERS, l.sound.register)}
@@ -1999,6 +2194,45 @@
     const sw = e.target.closest('#fx-switch');
     const kit = e.target.closest('[data-kit]');
     const voxChip = e.target.closest('[data-vox]');
+    const myBox = e.target.closest('[data-my-key]');
+    if (myBox) {
+      const key = myBox.dataset.myKey, l = target(), list = myList(key), isKit = key === MY_KITS;
+      const apply = e.target.closest('[data-my]'), del = e.target.closest('[data-my-del]'), saveBtn = e.target.closest('[data-my-save]');
+      if (apply) {
+        const x = list.find(y => y.id === apply.dataset.my);
+        if (!x) return;
+        snapshot();
+        l.sound = isKit ? JSON.parse(JSON.stringify(x.sound)) : { ...JSON.parse(JSON.stringify(x.sound)), vox: l.sound.vox };
+        l.fx = JSON.parse(JSON.stringify(x.fx));
+        l.preset = `my:${x.id}`;
+        engine.ensure();
+        engine.updateLayer(l);
+        buildPanel();
+        updateCards();
+        refreshQuick();
+        if (isKit) updateDrumMeta(); else renderLayers();
+        save();
+        engine.preview(l);
+        announce(`${l.name} now uses ${x.name}`);
+      } else if (del) {
+        const x = list.find(y => y.id === del.dataset.myDel);
+        if (!x || !window.confirm(`Delete “${x.name}” from your ${isKit ? 'kits' : 'sounds'}?`)) return;
+        writeJSON(key, list.filter(y => y !== x));
+        buildPanel();
+        announce(`${x.name} deleted`);
+      } else if (saveBtn) {
+        const input = myBox.querySelector('[data-my-name]'), name = input.value.trim() || `${isKit ? 'My kit' : 'My sound'} ${list.length + 1}`;
+        const x = { id: uid(), name, sound: JSON.parse(JSON.stringify(l.sound)), fx: JSON.parse(JSON.stringify(l.fx)) };
+        if (!isKit) delete x.sound.vox;
+        if (!writeJSON(key, [...list, x])) { announce('Could not save: browser storage is full or blocked'); return; }
+        l.preset = `my:${x.id}`;
+        buildPanel();
+        if (isKit) updateDrumMeta(); else renderLayers();
+        save();
+        announce(`Saved “${name}”. Find it under ${isKit ? 'My kits' : 'My sounds'} in every project.`);
+      }
+      return;
+    }
     if (voxChip) {
       const key = voxChip.dataset.vox, val = voxChip.dataset.val;
       setVox(key, val);
@@ -2326,6 +2560,15 @@
   $('#bpm-down').addEventListener('click', () => setBpm(project.bpm - 1));
   $('#bpm-up').addEventListener('click', () => setBpm(project.bpm + 1));
   $('#scale').innerHTML = SCALES.map(s => `<option value="${s.id}">${s.label}</option>`).join('');
+  $('#key').innerHTML = ST.KEY_NAMES.map((n, i) => `<option value="${i}">${n}</option>`).join('');
+  $('#key').addEventListener('change', e => {
+    project.key = Number(e.target.value);
+    ST.setRootKey(project.key);
+    save();
+    updateCanvasPos();
+    requestRender();
+    announce(`Key of ${ST.KEY_NAMES[project.key]}: every scale now starts on ${ST.KEY_NAMES[project.key]}`);
+  });
   $('#scale').addEventListener('change', e => {
     project.scale = e.target.value;
     save();
@@ -2620,6 +2863,42 @@
       btn.disabled = false;
       bar.hidden = true;
     }
+  });
+
+  // Stems: one WAV per layer and drums, aligned, packed into a .zip written by the app.
+  $('#ad-stems').addEventListener('click', async () => {
+    if (exporting) return;
+    if (!hasMusic()) { $('#ad-export-status').textContent = 'Nothing to export yet: draw something first.'; return; }
+    exporting = true;
+    const btns = ['#ad-export', '#ad-stems', '#ad-midi'].map(q => $(q)), bar = $('#ad-progress'), status = $('#ad-export-status');
+    btns.forEach(b => { b.disabled = true; });
+    bar.hidden = false;
+    bar.value = 0;
+    status.textContent = 'Rendering stems…';
+    try {
+      const stems = await ST.renderStems(project, { seconds: exportSeconds(), fade: Number($('#ad-fade').value), onProgress: f => { bar.value = f; status.textContent = `Rendering stems… ${Math.round(f * 100)}%`; } });
+      const base = slug(project.name) || 'sketch', files = [];
+      for (const [i, st] of stems.entries()) files.push({ name: `${base}-stems/${String(i + 1).padStart(2, '0')}-${slug(st.name) || 'layer'}.wav`, data: new Uint8Array(await st.blob.arrayBuffer()) });
+      const name = `${base}-stems.zip`;
+      download(ST.makeZip(files), name);
+      status.textContent = `Saved ${name}: ${stems.length} stems`;
+      announce(`Saved ${name} with ${stems.length} stems`);
+    } catch (err) {
+      console.error(err);
+      status.textContent = 'Could not create the stems. Try a shorter length.';
+    } finally {
+      exporting = false;
+      btns.forEach(b => { b.disabled = false; });
+      bar.hidden = true;
+    }
+  });
+  // MIDI: notes and drum hits, for the same length, ready for any DAW.
+  $('#ad-midi').addEventListener('click', () => {
+    if (!hasMusic()) { $('#ad-export-status').textContent = 'Nothing to export yet: draw something first.'; return; }
+    const name = `${slug(project.name) || 'sketch'}.mid`;
+    download(ST.buildMidi(project, exportSeconds()), name);
+    $('#ad-export-status').textContent = `Saved ${name}`;
+    announce(`Saved ${name}`);
   });
 
   // Settings
@@ -3175,6 +3454,72 @@
 
   const curveAt = x => project.drums.curve[Math.min(DRUM_CURVE - 1, Math.floor(x * DRUM_CURVE))];
 
+  // Frozen drums: a step grid of fixed hits. Bigger = louder, dashed = plays only sometimes.
+  function drawFrozen(c, hits, pos, lh) {
+    const steps = project.bars * 16, sw = DW / steps, len = L();
+    c.strokeStyle = theme.grid;
+    c.globalAlpha = 0.6;
+    for (let i = 1; i < steps; i++) { if (i % 4) { const x = Math.round(i * sw) + 0.5; c.beginPath(); c.moveTo(x, 0); c.lineTo(x, DH); c.stroke(); } }
+    c.globalAlpha = 1;
+    for (const h of project.drums.pattern || []) {
+      const x = h.step * sw, y = h.lane * lh, w = Math.max(3, sw - 3), hh = Math.max(3, lh - 3) * (0.45 + 0.55 * h.vel);
+      const near = pos && Math.abs(pos.t - h.step * len / steps) < len / steps * 0.6;
+      c.fillStyle = near ? theme.accent : 'rgba(244, 81, 30, 1)';
+      c.globalAlpha = (near ? 1 : 0.35 + 0.6 * h.vel) * (project.drums.muted ? 0.4 : 1);
+      c.fillRect(x + 1.5, y + (lh - hh) / 2, w, hh);
+      if (h.prob < 1) { c.globalAlpha = 1; c.setLineDash([2, 2]); c.strokeStyle = theme['ink-2']; c.strokeRect(x + 1.5, y + 1.5, w, lh - 3); c.setLineDash([]); }
+    }
+    c.globalAlpha = 1;
+    if (document.activeElement === drumCanvas && drumCanvas.matches(':focus-visible')) {
+      c.strokeStyle = theme.accent;
+      c.lineWidth = 2;
+      c.strokeRect(frozenCursorStep() * sw + 1, (ui.dcur.lane ?? 10) * lh + 1, sw - 2, lh - 2);
+      c.lineWidth = 1;
+    }
+  }
+  const frozenCursorStep = () => Math.min(project.bars * 16 - 1, Math.floor(ui.dcur.x * project.bars * 16 + 1e-6));
+  const VEL_STEPS = [0.35, 0.65, 1];
+  const hitAt = (lane, step) => (project.drums.pattern || []).find(h => h.lane === lane && h.step === step);
+  // Click: add or remove a hit. Shift: louder in three steps. Alt: always <-> half the time.
+  function editFrozen(lane, step, mode) {
+    const d = project.drums, h = hitAt(lane, step), name = `${DRUMS[lane].label}, ${barBeat(step / (project.bars * 16) * L())}`;
+    if (mode === 'vel' && h) {
+      const up = VEL_STEPS.findIndex(v => v > h.vel + 0.01); // the next louder level, then back to soft
+      h.vel = VEL_STEPS[up < 0 ? 0 : up];
+      speak(`${name}: ${h.vel < 0.5 ? 'soft' : h.vel < 0.9 ? 'medium' : 'loud'}`);
+    } else if (mode === 'prob' && h) {
+      h.prob = h.prob < 1 ? 1 : 0.5;
+      speak(`${name}: ${h.prob < 1 ? 'plays half the time' : 'always plays'}`);
+    } else if (mode === 'add' && !h) {
+      d.pattern.push({ lane, step, vel: 0.8, prob: 1 });
+      engine.drumNow(DRUMS[lane].id, 0.8);
+      speak(`${name} added`);
+    } else if (mode === 'remove' && h) {
+      d.pattern = d.pattern.filter(x => x !== h);
+      speak(`${name} removed`);
+    } else return false;
+    save();
+    requestRender();
+    return true;
+  }
+  function setFrozen(on) {
+    const d = project.drums;
+    snapshot();
+    if (on) {
+      const pos = engine.position(), seen = new Map();
+      for (const h of engine.drums(pos ? pos.k : 0)) {
+        const key = `${h.lane}:${h.step}`, prev = seen.get(key);
+        if (!prev || h.vel > prev.vel) seen.set(key, { lane: h.lane, step: h.step, vel: Math.round(h.vel * 100) / 100, prob: 1, tune: h.tune !== 1 ? h.tune : undefined });
+      }
+      d.pattern = [...seen.values()];
+      d.frozen = true;
+    } else d.frozen = false;
+    save();
+    refreshDrums();
+    requestRender();
+    announce(on ? `Frozen: ${d.pattern.length} hits are now fixed. Click a lane to add or remove hits, Shift-click for louder, Alt-click for sometimes. Unfreeze to generate again.` : 'Unfrozen: the drummer generates again');
+  }
+
   function renderDrums() {
     if (!DW || !DH) return;
     const c = d2d, d = project.drums, n = DRUMS.length, lh = DH / n, beats = project.bars * 4, len = L();
@@ -3191,55 +3536,58 @@
       c.beginPath(); c.moveTo(x, 0); c.lineTo(x, DH); c.stroke();
     }
     const pos = engine.position(), hits = engine.drums(pos ? pos.k : 0), off = d.muted ? 0.35 : 1;
-    // gaps in the energy line: nothing plays there
-    c.fillStyle = theme['ink-3'];
-    c.globalAlpha = 0.12;
-    for (let i = 0; i < DRUM_CURVE; i++) if (d.curve[i] < 0) c.fillRect(i / DRUM_CURVE * DW, 0, DW / DRUM_CURVE + 0.5, DH);
-    // fills and stops the drummer planned for this pass
-    c.font = '600 10px system-ui, -apple-system, sans-serif';
-    c.textBaseline = 'top';
-    for (const [a, b] of hits.fills) {
-      c.globalAlpha = 0.14; c.fillStyle = theme.accent; c.fillRect(X(a), 0, X(b) - X(a), DH);
-      c.globalAlpha = 0.9; c.fillText('FILL', X(a) + 4, 3);
-    }
-    for (const [a, b] of hits.stops) {
-      c.globalAlpha = 0.22; c.fillStyle = theme['ink-2']; c.fillRect(X(a), 0, X(b) - X(a), DH);
-      c.globalAlpha = 0.9; c.fillText('STOP', X(a) + 4, 15);
-    }
-    // generated hits: they light up as they play, dirty ones glow red
-    for (const h of hits) {
-      const x = X(h.t), y = (h.lane + 0.5) * lh, r = 1.8 + h.vel * 2.6;
-      const near = pos && pos.t >= h.t - 0.02 && pos.t - h.t < 0.12;
-      c.globalAlpha = (near ? 1 : 0.3 + h.vel * 0.45) * off;
-      c.fillStyle = near ? theme.accent : h.dirt > 0.45 ? '#f5a524' : theme['ink-2'];
-      c.beginPath(); c.arc(x, y, near ? r + 2 : r, 0, Math.PI * 2); c.fill();
-    }
-    // the energy line, broken at the gaps, with a soft area under it
-    const runs = [];
-    for (let i = 0; i < DRUM_CURVE; i++) {
-      if (d.curve[i] < 0) continue;
-      if (!runs.length || runs[runs.length - 1].end !== i) runs.push({ start: i, end: i, pts: [] });
-      const run = runs[runs.length - 1], y = (1 - d.curve[i]) * DH;
-      if (i === run.start) run.pts.push([i / DRUM_CURVE * DW, y]);
-      run.pts.push([(i + 0.5) / DRUM_CURVE * DW, y]);
-      run.end = i + 1;
-      run.lastY = y;
-    }
-    c.lineWidth = 3;
-    c.lineJoin = 'round';
-    c.lineCap = 'round';
-    for (const run of runs) {
-      run.pts.push([run.end / DRUM_CURVE * DW, run.lastY]);
-      c.beginPath();
-      run.pts.forEach(([x, y], j) => (j ? c.lineTo(x, y) : c.moveTo(x, y)));
-      c.globalAlpha = 0.1 * off;
-      c.fillStyle = DRUM_LINE;
-      c.lineTo(run.pts[run.pts.length - 1][0], DH); c.lineTo(run.pts[0][0], DH); c.closePath(); c.fill();
-      c.globalAlpha = off;
-      c.strokeStyle = DRUM_LINE;
-      c.beginPath();
-      run.pts.forEach(([x, y], j) => (j ? c.lineTo(x, y) : c.moveTo(x, y)));
-      c.stroke();
+    if (d.frozen) drawFrozen(c, hits, pos, lh);
+    else {
+      // gaps in the energy line: nothing plays there
+      c.fillStyle = theme['ink-3'];
+      c.globalAlpha = 0.12;
+      for (let i = 0; i < DRUM_CURVE; i++) if (d.curve[i] < 0) c.fillRect(i / DRUM_CURVE * DW, 0, DW / DRUM_CURVE + 0.5, DH);
+      // fills and stops the drummer planned for this pass
+      c.font = '600 10px system-ui, -apple-system, sans-serif';
+      c.textBaseline = 'top';
+      for (const [a, b] of hits.fills) {
+        c.globalAlpha = 0.14; c.fillStyle = theme.accent; c.fillRect(X(a), 0, X(b) - X(a), DH);
+        c.globalAlpha = 0.9; c.fillText('FILL', X(a) + 4, 3);
+      }
+      for (const [a, b] of hits.stops) {
+        c.globalAlpha = 0.22; c.fillStyle = theme['ink-2']; c.fillRect(X(a), 0, X(b) - X(a), DH);
+        c.globalAlpha = 0.9; c.fillText('STOP', X(a) + 4, 15);
+      }
+      // generated hits: they light up as they play, dirty ones glow red
+      for (const h of hits) {
+        const x = X(h.t), y = (h.lane + 0.5) * lh, r = 1.8 + h.vel * 2.6;
+        const near = pos && pos.t >= h.t - 0.02 && pos.t - h.t < 0.12;
+        c.globalAlpha = (near ? 1 : 0.3 + h.vel * 0.45) * off;
+        c.fillStyle = near ? theme.accent : h.dirt > 0.45 ? '#f5a524' : theme['ink-2'];
+        c.beginPath(); c.arc(x, y, near ? r + 2 : r, 0, Math.PI * 2); c.fill();
+      }
+      // the energy line, broken at the gaps, with a soft area under it
+      const runs = [];
+      for (let i = 0; i < DRUM_CURVE; i++) {
+        if (d.curve[i] < 0) continue;
+        if (!runs.length || runs[runs.length - 1].end !== i) runs.push({ start: i, end: i, pts: [] });
+        const run = runs[runs.length - 1], y = (1 - d.curve[i]) * DH;
+        if (i === run.start) run.pts.push([i / DRUM_CURVE * DW, y]);
+        run.pts.push([(i + 0.5) / DRUM_CURVE * DW, y]);
+        run.end = i + 1;
+        run.lastY = y;
+      }
+      c.lineWidth = 3;
+      c.lineJoin = 'round';
+      c.lineCap = 'round';
+      for (const run of runs) {
+        run.pts.push([run.end / DRUM_CURVE * DW, run.lastY]);
+        c.beginPath();
+        run.pts.forEach(([x, y], j) => (j ? c.lineTo(x, y) : c.moveTo(x, y)));
+        c.globalAlpha = 0.1 * off;
+        c.fillStyle = DRUM_LINE;
+        c.lineTo(run.pts[run.pts.length - 1][0], DH); c.lineTo(run.pts[0][0], DH); c.closePath(); c.fill();
+        c.globalAlpha = off;
+        c.strokeStyle = DRUM_LINE;
+        c.beginPath();
+        run.pts.forEach(([x, y], j) => (j ? c.lineTo(x, y) : c.moveTo(x, y)));
+        c.stroke();
+      }
     }
     // lane names
     c.font = '11px system-ui, -apple-system, sans-serif';
@@ -3296,6 +3644,14 @@
     drumCanvas.focus({ preventScroll: true });
     try { drumCanvas.setPointerCapture(e.pointerId); } catch (err) { /* synthetic pointer */ }
     const p = dnorm(e);
+    if (project.drums.frozen) {
+      const lane = Math.min(DRUMS.length - 1, Math.floor(p[1] * DRUMS.length)), step = Math.min(project.bars * 16 - 1, Math.floor(p[0] * project.bars * 16));
+      snapshot();
+      const mode = e.shiftKey ? 'vel' : e.altKey ? 'prob' : hitAt(lane, step) ? 'remove' : 'add';
+      if (!editFrozen(lane, step, mode)) { past.pop(); updateUndo(); return; }
+      ui.frozenPaint = mode === 'add' || mode === 'remove' ? { mode, last: `${lane}:${step}` } : null;
+      return;
+    }
     snapshot();
     ui.drumPen = { last: p, x0: p[0], x1: p[0] };
     paintCurve(p, p, ui.drumTool === 'gap');
@@ -3304,6 +3660,11 @@
     requestRender();
   });
   drumCanvas.addEventListener('pointermove', e => {
+    if (ui.frozenPaint && project.drums.frozen) {
+      const p = dnorm(e), lane = Math.min(DRUMS.length - 1, Math.floor(p[1] * DRUMS.length)), step = Math.min(project.bars * 16 - 1, Math.floor(p[0] * project.bars * 16));
+      if (`${lane}:${step}` !== ui.frozenPaint.last) { ui.frozenPaint.last = `${lane}:${step}`; editFrozen(lane, step, ui.frozenPaint.mode); }
+      return;
+    }
     const pen = ui.drumPen;
     if (!pen) return;
     const p = dnorm(e);
@@ -3315,6 +3676,7 @@
     requestRender();
   });
   const endDrumPointer = () => {
+    ui.frozenPaint = null;
     const pen = ui.drumPen;
     if (!pen) return;
     ui.drumPen = null;
@@ -3343,6 +3705,25 @@
   }
   drumCanvas.addEventListener('keydown', e => {
     const cur = ui.dcur, steps = project.bars * 16;
+    if (project.drums.frozen) {
+      if (cur.lane == null) cur.lane = DRUMS.length - 1;
+      const mv = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+      if (mv) {
+        e.preventDefault();
+        const st = Math.min(steps - 1, Math.max(0, frozenCursorStep() + mv[0] * (e.shiftKey ? 4 : 1)));
+        cur.x = st / steps;
+        cur.lane = Math.min(DRUMS.length - 1, Math.max(0, cur.lane + mv[1]));
+        const h = hitAt(cur.lane, st);
+        speak(`${DRUMS[cur.lane].label}, ${barBeat(st / steps * L())}, ${h ? (h.vel < 0.5 ? 'soft hit' : h.vel < 0.9 ? 'hit' : 'loud hit') : 'empty'}`);
+        renderDrums();
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        const st = frozenCursorStep(), mode = e.shiftKey ? 'vel' : e.altKey ? 'prob' : hitAt(cur.lane, st) ? 'remove' : 'add';
+        snapshot();
+        if (!editFrozen(cur.lane, st, mode)) { past.pop(); updateUndo(); }
+      }
+      return;
+    }
     if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
       e.preventDefault();
       const s = Math.floor(cur.x * steps + 1e-6) + (e.key === 'ArrowRight' ? 1 : -1) * (e.shiftKey ? 4 : 1);
@@ -3497,6 +3878,7 @@
     requestRender();
     announce('Energy line cleared, drums are silent. Undo brings it back.');
   });
+  $('#drum-freeze').addEventListener('click', () => setFrozen(!project.drums.frozen));
   $('#drum-on').addEventListener('change', e => {
     project.drums.muted = !e.target.checked;
     engine.updateDrums();
@@ -3527,7 +3909,14 @@
   $('#drum-mpk').addEventListener('click', () => setDrumMpk(!ui.drumMpk));
 
   function refreshDrums() {
+    const frozen = !!project.drums.frozen;
     $('#drum-on').checked = !project.drums.muted;
+    $('#drum-freeze').setAttribute('aria-pressed', String(frozen));
+    $('#drum-freeze').textContent = frozen ? 'Unfreeze' : 'Freeze';
+    $('#drum-card').classList.toggle('is-frozen', frozen);
+    for (const id of ['#drum-flat', '#drum-dice', '#drum-keep', '#drum-clear']) { $(id).disabled = frozen; $(id).title = frozen ? 'Unfreeze to generate again' : ''; }
+    document.querySelectorAll('input[name="drumtool"]').forEach(r => { r.disabled = frozen; });
+    $('#drum-empty').hidden = frozen || ST.drumsDrawn(project.drums);
     syncDrumKnobs();
     updateKeep();
     updateStyles();
@@ -3660,32 +4049,37 @@
     speak(describe(selected().item, s.layer));
     return true;
   }
+  // Put copies of items on a layer and select them (duplicate, paste).
+  function placeCopies(layer, items, shift) {
+    const copies = items.map(it => { const tf = tfOf(it); return { ...JSON.parse(JSON.stringify(it)), id: uid(), tf: { ...tf, dx: tf.dx + shift } }; });
+    layer.strokes.push(...copies);
+    ui.sel = { layerId: layer.id, id: copies[0].id };
+    ui.extra = copies.slice(1).map(c => c.id);
+    ui.extraFor = ui.sel.id;
+    return copies.length;
+  }
   function duplicateSelected() {
-    const s = selected();
-    if (!s) { announce('Select a line first, then duplicate it'); return; }
+    const all = selectedItems();
+    if (!all.length) { announce('Select a line first, then duplicate it'); return; }
     snapshot();
-    const tf = tfOf(s.item), copy = { ...JSON.parse(JSON.stringify(s.item)), id: uid(), tf: { ...tf, dx: tf.dx + 1 / (project.bars * 4) } };
-    s.layer.strokes.push(copy);
-    ui.sel = { layerId: s.layer.id, id: copy.id };
+    const n = placeCopies(all[0].layer, all.map(x => x.item), 1 / (project.bars * 4));
     refreshAfterEdit();
     renderKnobStrip();
-    announce('Duplicated, one beat later');
+    announce(`${n === 1 ? 'Duplicated' : `${n} duplicated`}, one beat later`);
   }
   let clipboard = null;
   function copySelected() {
-    const s = selected();
-    if (!s) { announce('Select a line first, then copy it'); return; }
-    clipboard = JSON.parse(JSON.stringify(s.item));
-    announce('Copied. Pick any layer and paste.');
+    const all = selectedItems();
+    if (!all.length) { announce('Select a line first, then copy it'); return; }
+    clipboard = JSON.parse(JSON.stringify(all.map(x => x.item)));
+    announce(`${clipboard.length === 1 ? 'Copied' : `${clipboard.length} copied`}. Pick any layer and paste.`);
   }
   function pasteClipboard() {
     if (!clipboard) { announce('Nothing copied yet'); return; }
     const layer = current();
     unhideForDrawing();
     snapshot();
-    const item = { ...JSON.parse(JSON.stringify(clipboard)), id: uid() };
-    layer.strokes.push(item);
-    ui.sel = { layerId: layer.id, id: item.id };
+    placeCopies(layer, clipboard, 0);
     refreshAfterEdit();
     renderKnobStrip();
     announce(`Pasted on ${layer.name}`);
@@ -3818,6 +4212,8 @@
     nameInput.value = project.name;
     $('#bpm').value = project.bpm;
     $('#scale').value = project.scale;
+    $('#key').value = String(project.key || 0);
+    ST.setRootKey(project.key || 0);
     $('#loop').checked = project.loop;
     $('#bars').value = String(project.bars);
     $('#snap').value = project.snap || 'off';

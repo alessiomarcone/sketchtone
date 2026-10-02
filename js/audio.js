@@ -23,6 +23,9 @@
   const cutoff = b => 150 * Math.pow(120, b / 100); // 150 Hz .. 18 kHz
   const loopLength = p => p.bars * 4 * 60 / p.bpm;
   const isSnapped = scale => !!SCALE_STEPS[scale];
+  // Root key (0 = C … 11 = B): every scale is built on it. Set from the project.
+  let rootKey = 0;
+  const setRootKey = k => { rootKey = ((Math.round(k) % 12) + 12) % 12; };
 
   function snapTo(m, steps) {
     let best = Math.round(m), bestD = Infinity;
@@ -39,14 +42,15 @@
   function yToMidi(y, scale, register) {
     const m = LOW_MIDI + (1 - clamp01(y)) * (HIGH_MIDI - LOW_MIDI);
     const steps = SCALE_STEPS[scale];
-    return (steps ? snapTo(m, steps) : m) + (REGISTER[register] || 0);
+    return (steps ? snapTo(m - rootKey, steps) + rootKey : m) + (REGISTER[register] || 0);
   }
 
   // Guide lines for the canvas: every scale note, or just octaves for theremin.
   function pitchLines(scale) {
     const steps = SCALE_STEPS[scale] || [0], out = [];
     for (let m = LOW_MIDI; m <= HIGH_MIDI; m++) {
-      if (steps.includes(m % 12)) out.push({ y: 1 - (m - LOW_MIDI) / (HIGH_MIDI - LOW_MIDI), midi: m, isC: m % 12 === 0 });
+      const deg = (((m - rootKey) % 12) + 12) % 12;
+      if (steps.includes(deg)) out.push({ y: 1 - (m - LOW_MIDI) / (HIGH_MIDI - LOW_MIDI), midi: m, isC: deg === 0 }); // isC: the root note
     }
     return out;
   }
@@ -67,7 +71,7 @@
   // sampled along x. Where a stroke doubles back, the part drawn last wins.
   const noteCache = new WeakMap();
   function strokeToNote(stroke, length, scale, register) {
-    const key = `${length}|${scale}|${register}`;
+    const key = `${length}|${scale}|${register}|${rootKey}`;
     const hit = noteCache.get(stroke);
     if (hit && hit.key === key) return hit.note;
     const pts = stroke.points;
@@ -703,6 +707,12 @@
       configureBus(this.drumFx, this.ctx, drumChannel(d), this.env(), true, now, this.fxOf(d));
     }
 
+    // One drum hit right now, with the drum layer's sound and FX (editing hits).
+    drumNow(id, vel = 0.9) {
+      const ctx = this.ensure();
+      drumHit(ctx, this.drumBus.input, id, ctx.currentTime + 0.01, vel, 1, this.getProject().drums.sound);
+    }
+
     // "Try sound" on the drum layer: a one-bar lick through its FX.
     previewDrums() {
       const ctx = this.ensure(), d = this.getProject().drums, t = ctx.currentTime + 0.03, s = 60 / this.getProject().bpm / 4;
@@ -909,6 +919,7 @@
   // grooves, ping-pong) for `seconds`, then either a fade-out or the natural tail.
   // Events are scheduled window by window while rendering, so long files stay light.
   async function renderWav(project, opts = {}) {
+    setRootKey(project.key || 0); // the file uses the project's own key
     const sr = 44100, L = loopLength(project);
     const seconds = Math.max(0.5, opts.seconds || L), fade = Math.max(0, opts.fade || 0);
     const total = seconds + (fade ? 0.05 : 5);
@@ -963,7 +974,68 @@
       }
     }
     if (opts.onProgress) opts.onProgress(1);
-    return toWav(buf, Math.ceil(sr * (fade ? total : seconds)));
+    return toWav(buf, opts.keepTail ? buf.length : Math.ceil(sr * (fade ? total : seconds)));
+  }
+
+  // Stems: every audible layer and the drums on their own, same length, aligned at zero.
+  async function renderStems(project, opts = {}) {
+    const solo = (keep, drums) => {
+      const p = JSON.parse(JSON.stringify(project));
+      p.layers.forEach(l => { l.solo = false; l.muted = l.id !== keep; });
+      p.drums.solo = false;
+      p.drums.muted = !drums;
+      return p;
+    };
+    const channels = project.layers.filter(l => audible(l, project) && l.strokes.length).map(l => ({ name: l.name, p: solo(l.id, false) }));
+    if (project.drums && drumsAudible(project) && ST.drumsDrawn(project.drums)) channels.push({ name: 'Drums', p: solo(null, true) });
+    const out = [];
+    for (let i = 0; i < channels.length; i++) {
+      const c = channels[i];
+      const blob = await renderWav(c.p, { ...opts, keepTail: true, onProgress: f => opts.onProgress && opts.onProgress((i + f) / channels.length) });
+      out.push({ name: c.name, blob });
+    }
+    return out;
+  }
+
+  // MIDI: the drawn notes (split where the pitch steps) and the drum hits, for `seconds`.
+  const GM_DRUMS = { kick1: 36, kick2: 35, snare1: 38, snare2: 40, snare3: 37, clap: 39, chat: 42, ohat: 46, shaker: 82, conga: 63, tom: 45 };
+  function buildMidi(project, seconds) {
+    setRootKey(project.key || 0);
+    const L = loopLength(project), passes = Math.max(1, Math.ceil(seconds / L - 1e-9)), tracks = [];
+    let channel = 0;
+    for (const layer of project.layers) {
+      if (!audible(layer, project) || !layer.strokes.length) continue;
+      const notes = [];
+      for (let k = 0; k < passes; k++) {
+        for (const n of collectNotes(layer, k, L, project.scale)) {
+          const vel = Math.max(30, Math.min(127, n.peak / 0.85 * 110));
+          let segStart = 0, cur = Math.round(n.midis[0]);
+          const flush = end => {
+            const t = k * L + n.start + segStart, dur = end - segStart;
+            if (dur >= 0.03 && t < seconds) notes.push({ t, dur: Math.min(dur, seconds - t), note: cur, vel });
+          };
+          for (let i = 1; i < n.times.length; i++) {
+            const m = Math.round(n.midis[i]);
+            if (m !== cur) { flush(n.times[i]); segStart = n.times[i]; cur = m; }
+          }
+          flush(n.dur);
+        }
+      }
+      tracks.push({ name: layer.name, channel, notes });
+      channel = channel === 8 ? 10 : (channel + 1) % 16; // channel 10 (index 9) is for drums
+    }
+    const d = project.drums;
+    if (d && drumsAudible(project) && ST.drumsDrawn(d)) {
+      const notes = [];
+      for (let k = 0; k < passes; k++) {
+        for (const h of drumHits(d, project.bars, L, k)) {
+          const t = k * L + h.t;
+          if (t < seconds) notes.push({ t, dur: 0.06, note: GM_DRUMS[h.id] || 38, vel: Math.max(20, Math.min(127, h.vel * 120)) });
+        }
+      }
+      tracks.push({ name: 'Drums', channel: 9, notes });
+    }
+    return new Blob([ST.makeMidi(tracks, project.bpm)], { type: 'audio/midi' });
   }
 
   function toWav(buf, minLen) {
@@ -991,7 +1063,7 @@
   }
 
   Object.assign(ST, {
-    Engine, REGISTER, pitchLines, yToMidi, noteName, strokeSpan, renderWav,
+    Engine, REGISTER, pitchLines, yToMidi, noteName, strokeSpan, renderWav, renderStems, buildMidi, setRootKey, KEY_NAMES: NAMES,
     loopLength, readPos, readPlan, sliceOrder, collectNotes, audible,
   });
 })(window.ST = window.ST || {});
