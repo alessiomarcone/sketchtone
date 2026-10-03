@@ -192,6 +192,7 @@
     },
     { id: 'soundfx', tag: 'FX on sound', title: 'Sound FX', group: 'sound', intro: 'Change the tone and colour of this layer.' },
     { id: 'timefx', tag: 'FX time', title: 'Time FX', group: 'time', intro: 'Echoes, rooms and movement over time.' },
+    { id: 'lfo', tag: 'LFO', title: 'Motion', lfo: true, intro: 'Moves one knob of this layer up and down, in time with the beat.' },
     {
       id: 'voice', tag: 'Voice', title: 'Voice FX', vox: true,
       intro: 'How the robot sings every word of this layer.',

@@ -45,8 +45,25 @@
       muted: false, solo: false, hidden: false, volume: 0.8,
       preset: presetId, sound: { ...PRESETS[presetId].sound }, fx: presetFx(presetId),
       read: { mode: 'normal', divisions: 8, seed: 1 + Math.floor(Math.random() * 1e6) },
+      send: { room: 0, echo: 0 }, lfo: { ...ST.LFO_DEFAULT },
       strokes: [],
     };
+  }
+
+  // Eight macros ready to play: one knob can move several settings at once.
+  const SCENES = 8, MACROS = 8;
+  function defaultMacros(p) {
+    const d = p.drums, m = (name, value, maps) => ({ name, value, maps });
+    return [
+      m('Filter', 0.5, [{ path: 'master.filter', from: -100, to: 100 }]),
+      m('Room', 0, [{ path: 'all.room', from: 0, to: 70 }]),
+      m('Echo', 0, [{ path: 'all.echo', from: 0, to: 60 }]),
+      m('Energy', (d.energy ?? 50) / 100, [{ path: 'drum.energy', from: 0, to: 100 }]),
+      m('Fills', (d.fills ?? 0) / 100, [{ path: 'drum.fills', from: 0, to: 100 }]),
+      m('Dirt', (d.dirt ?? 0) / 100, [{ path: 'drum.dirt', from: 0, to: 100 }]),
+      m('Swing', (d.swing ?? 0) / 75, [{ path: 'drum.swing', from: 0, to: 75 }]),
+      m('Space', 0.3, [{ path: 'master.roomsize', from: 1, to: 6 }, { path: 'master.feedback', from: 20, to: 80 }]),
+    ];
   }
 
   function newProject() {
@@ -58,6 +75,12 @@
     const base = newProject();
     for (const k of ['bpm', 'bars', 'scale', 'key', 'loop', 'name', 'layerCount', 'snap']) if (p[k] === undefined) p[k] = base[k];
     p.drums = ST.migrateDrums(p.drums);
+    const md = ST.MASTER_DEFAULT;
+    p.master = { filter: 0, ...p.master, room: { ...md.room, ...(p.master || {}).room }, echo: { ...md.echo, ...(p.master || {}).echo } };
+    p.drums.send = { room: 0, echo: 0, ...p.drums.send };
+    p.drums.lfo = { ...ST.LFO_DEFAULT, target: 'fx.filter.cutoff', ...p.drums.lfo };
+    p.scenes = Array.from({ length: SCENES }, (_, i) => (p.scenes && p.scenes[i]) || null);
+    if (!Array.isArray(p.macros) || p.macros.length !== MACROS) p.macros = defaultMacros(p);
     const fxBase = defaultFx();
     p.layers.forEach(l => {
       l.sound = { ...DEFAULT_SOUND, ...l.sound };
@@ -66,6 +89,8 @@
       l.read = { mode: 'normal', divisions: 8, seed: 7, ...l.read };
       l.solo = !!l.solo;
       l.hidden = !!l.hidden;
+      l.send = { room: 0, echo: 0, ...l.send };
+      l.lfo = { ...ST.LFO_DEFAULT, ...l.lfo };
       l.strokes.forEach(it => { if (!it.id) it.id = uid(); });
     });
     return p;
@@ -113,7 +138,7 @@
   }
   const wantsDemo = /[?&]demo\b/.test(location.search);
   const saved = loadProject();
-  let project = wantsDemo && !(saved && saved.layers.some(l => l.strokes.length)) ? normalize(demoProject()) : saved || newProject();
+  let project = wantsDemo && !(saved && saved.layers.some(l => l.strokes.length)) ? normalize(demoProject()) : saved || normalize(newProject());
   const engine = new Engine(() => project);
   let saveTimer = 0;
   // Autosave, with a visible status so you always know your work is safe.
@@ -1529,7 +1554,7 @@
   });
 
   // ---------- side tabs ----------
-  const tabs = [$('#tab-layers'), $('#tab-timeline'), $('#tab-keys')];
+  const tabs = [$('#tab-layers'), $('#tab-timeline')];
   function setSide(which, focus) {
     ui.side = which;
     tabs.forEach(t => {
@@ -1540,7 +1565,6 @@
       if (on && focus) t.focus();
     });
     if (which === 'timeline') renderReadPanel();
-    if (which === 'keys') { renderPiano(); renderKeyDetail(); }
   }
   tabs.forEach(t => {
     t.addEventListener('click', () => setSide(t.id.replace('tab-', '')));
@@ -1670,6 +1694,7 @@
     if (ui.panel) buildPanel();
     else renderKnobStrip();
     renderReadPanel();
+    if (ui.dock === 'perform') syncPerformControls();
     requestRender();
     save();
     const l = current();
@@ -1819,6 +1844,10 @@
 
   function summary(id, l) {
     const s = l.sound;
+    if (id === 'lfo') {
+      const f = { ...ST.LFO_DEFAULT, ...l.lfo };
+      return f.on ? esc(`${lfoTargetLabel(f.target)} · ${rateLabel(f.rate)} · ${(LFO_SHAPES.find(x => x[0] === f.shape) || ['', ''])[1].toLowerCase()}`) : 'Off';
+    }
     if (id === 'voice') {
       if (isDrums(l)) return 'Only for words on canvas layers';
       const v = voxOf(l), h = ST.VOX_CHOICES.harmony.options.find(o => o[0] === v.harmony)[1];
@@ -1858,6 +1887,12 @@
     });
     for (const [key, k] of quickControls) { // an effect's quick knob looks dimmed while it is off
       const [kind, id] = key.split('.');
+      if (kind === 'lfo') {
+        const on = !!(l.lfo && l.lfo.on), sw = k.el.querySelector('.qk-power');
+        k.el.classList.toggle('is-off', !on);
+        if (sw) { sw.textContent = on ? 'On' : 'Off'; sw.setAttribute('aria-pressed', String(on)); sw.setAttribute('aria-label', `LFO ${on ? 'on' : 'off'} (${l.name})`); }
+        continue;
+      }
       if (kind !== 'fx') continue;
       const on = !!l.fx[id].on, sw = k.el.querySelector('.qk-power');
       k.el.classList.toggle('is-off', !on);
@@ -1874,6 +1909,7 @@
     soundfx: () => [['fx', 'filter', 'cutoff'], ['fx', 'drive', 'amount'], ['fx', 'comp', 'amount']],
     timefx: () => [['fx', 'echo', 'amount'], ['fx', 'reverb', 'amount'], ['fx', 'chorus', 'amount']],
     voice: () => (ui.drumSel ? [] : ['tune', 'formant', 'robot'].map(k => ['vox', k])),
+    lfo: () => [['lfo', 'rate'], ['lfo', 'depth']],
   };
   const quickControls = new Map();
   function buildQuick() {
@@ -1885,18 +1921,19 @@
       for (const path of QUICK[card.dataset.panel]()) {
         const d = paramDef(path);
         if (!d || d.idle) continue;
-        const fx = path[0] === 'fx' && FX_BY_ID[path[1]];
-        const reset = fx ? fx.defaults[path[2]] : (ui.drumSel ? ST.DRUM_SOUND : DEFAULT_SOUND)[path[1]];
+        const fx = path[0] === 'fx' && FX_BY_ID[path[1]], lfo = path[0] === 'lfo';
+        const reset = fx ? fx.defaults[path[2]] : lfo ? (path[1] === 'rate' ? ST.LFO_RATES.indexOf(ST.LFO_DEFAULT.rate) : ST.LFO_DEFAULT.depth) : (ui.drumSel ? ST.DRUM_SOUND : DEFAULT_SOUND)[path[1]];
         const k = createKnob({
-          label: fx ? fx.label : d.short || d.label, min: d.min, max: d.max, step: d.step, value: d.get(), reset, fmt: d.fmt,
+          label: fx ? fx.label : lfo ? (path[1] === 'rate' ? 'Speed' : 'Depth') : d.short || d.label, min: d.min, max: d.max, step: d.step, value: d.get(), reset, fmt: d.fmt,
           hint: `${d.hint || ''}${fx ? ' Turning it switches the effect on.' : ''} (${who})`, onInput: v => d.set(v),
         });
         k.el.classList.add('knob-mini');
-        if (fx) { // a visible switch: the amount stays when the effect is off
+        k.el.dataset.path = pathKey(path);
+        if (fx || (lfo && path[1] === 'depth')) { // a visible switch: the amount stays when the effect is off
           const sw = document.createElement('button');
           sw.type = 'button';
           sw.className = 'qk-power';
-          sw.dataset.fx = path[1];
+          if (fx) sw.dataset.fx = path[1]; else sw.dataset.lfo = '1';
           k.el.append(sw);
         }
         quickControls.set(pathKey(path), k);
@@ -1919,6 +1956,7 @@
 
   $('#qa-cards').addEventListener('click', e => {
     const sw = e.target.closest('.qk-power');
+    if (sw && sw.dataset.lfo) { toggleLfo(); return; }
     if (sw) {
       const l = target(), id = sw.dataset.fx;
       l.fx[id].on = !l.fx[id].on;
@@ -2032,6 +2070,7 @@
     }
     const row = panel.querySelector('.knob-row');
     panelControls.clear();
+    if (def.lfo) { buildLfoPanel(l, row); return; }
     if (def.vox) {
       const v = voxOf(l);
       for (const k of def.knobs) {
@@ -2141,10 +2180,10 @@
   }
 
   // Touching any control of an effect switches it on: no hunting for the power button.
-  function setFx(id, key, value, sets) {
-    const l = target(), p = l.fx[id];
+  function setFx(id, key, value, sets, l = target()) {
+    const p = l.fx[id], shown = l === target();
     p[key] = value;
-    const q = quickControls.get(`fx.${id}.${key}`);
+    const q = shown && quickControls.get(`fx.${id}.${key}`);
     if (q) q.set(value);
     if (sets) {
       Object.assign(p, sets);
@@ -2153,34 +2192,100 @@
         if (r) r.checked = true;
       }
     }
-    if (!p.on) { p.on = true; refreshFxState(id); announce(`${FX_BY_ID[id].label} on`); }
+    if (!p.on) { p.on = true; if (shown) refreshFxState(id); announce(`${FX_BY_ID[id].label} on`); }
     if (!isDrums(l)) markCustom(l); // drum kits only set the sound, not the FX
     engine.updateLayer(l);
     updateCards();
     save();
   }
 
+  // ---------- LFO (Motion card) ----------
+  const LFO_SHAPES = [['sine', 'Smooth'], ['triangle', 'Even'], ['saw', 'Falling'], ['square', 'On / off'], ['random', 'Random steps']];
+  const rateLabel = r => (r < 1 ? `1/${Math.round(4 / r)} note` : r === 1 ? '1 beat' : r < 4 ? `${r} beats` : r === 4 ? '1 bar' : `${r / 4} bars`);
+  function lfoTargets() {
+    const out = [['Mix', [['volume', 'Volume'], ['pan', 'Pan'], ['send.room', 'Room send'], ['send.echo', 'Echo send']]]];
+    for (const group of ['sound', 'time']) {
+      for (const id of FX_GROUPS[group]) {
+        const f = FX_BY_ID[id], knobs = f.params.filter(c => c.kind === 'knob');
+        if (knobs.length) out.push([f.label, knobs.map(c => [`fx.${id}.${c.key}`, c.label.toLowerCase() === f.label.toLowerCase() ? f.label : `${f.label} ${c.label.toLowerCase()}`])]);
+      }
+    }
+    return out;
+  }
+  const lfoTargetLabel = t => (lfoTargets().flatMap(g => g[1]).find(x => x[0] === t) || [t, t])[1];
+  function setLfo(key, value, l = target()) {
+    l.lfo = { ...ST.LFO_DEFAULT, ...l.lfo, [key]: value };
+    if (key !== 'on' && !l.lfo.on) { l.lfo.on = true; announce('LFO on'); }
+    if (l.lfo.on && (key === 'target' || key === 'on') && l.lfo.target.startsWith('fx.')) { // the effect it moves must be on to be heard
+      const id = l.lfo.target.split('.')[1];
+      if (!l.fx[id].on) { l.fx[id].on = true; announce(`LFO on, and ${FX_BY_ID[id].label} switched on`); }
+    }
+    if (!isDrums(l)) markCustom(l);
+    engine.updateLayer(l);
+    if (l === target()) {
+      const q = quickControls.get(`lfo.${key}`);
+      if (q) q.set(key === 'rate' ? ST.LFO_RATES.indexOf(value) : value);
+      if (ui.panel === 'lfo' && (key === 'on' || key === 'target' || key === 'shape')) buildPanel();
+    }
+    updateCards();
+    save();
+  }
+  function toggleLfo() {
+    const l = target(), on = !(l.lfo && l.lfo.on);
+    setLfo('on', on, l);
+    if (!on) engine.updateLayer(l); // back to the knob's own value
+    announce(`LFO ${on ? 'on' : 'off'} on ${l.name}`);
+  }
+  function buildLfoPanel(l, row) {
+    const f = { ...ST.LFO_DEFAULT, ...l.lfo };
+    const top = document.createElement('div');
+    top.className = 'lfo-top';
+    top.innerHTML = `
+      <button type="button" role="switch" class="fx-switch" id="lfo-switch" aria-checked="${f.on}" aria-label="LFO">
+        <span class="fx-switch-track" aria-hidden="true"><span class="fx-switch-thumb"></span></span>
+        <span class="fx-switch-text" aria-hidden="true">${f.on ? 'On' : 'Off'}</span>
+      </button>
+      <label class="ad-field lfo-target"><span>Moves</span>
+        <select id="lfo-target">${lfoTargets().map(([g, opts]) => `<optgroup label="${esc(g)}">${opts.map(([v, lab]) => `<option value="${v}"${v === f.target ? ' selected' : ''}>${esc(lab)}</option>`).join('')}</optgroup>`).join('')}</select>
+      </label>
+      <div class="field"><span class="field-label" id="lfo-shape-label">Shape</span>
+        <div class="chips" role="group" aria-labelledby="lfo-shape-label">${LFO_SHAPES.map(([v, lab]) => `<button type="button" class="chip" data-lfo-shape="${v}" aria-pressed="${v === f.shape}">${lab}</button>`).join('')}</div>
+      </div>`;
+    row.before(top);
+    for (const key of ['rate', 'depth']) {
+      const d = paramDef(['lfo', key]);
+      const kn = createKnob({ ...d, label: key === 'rate' ? 'Speed' : 'Depth', value: d.get(), reset: key === 'rate' ? ST.LFO_RATES.indexOf(ST.LFO_DEFAULT.rate) : ST.LFO_DEFAULT.depth,
+        hint: key === 'rate' ? 'One full wave every…, locked to the tempo' : 'How far it moves the knob, either side of where you set it', onInput: v => d.set(v) });
+      kn.el.dataset.path = `lfo.${key}`;
+      panelControls.set(kn.el.dataset.path, kn);
+      row.append(kn.el);
+    }
+    const note = document.createElement('p');
+    note.className = 'fx-note';
+    note.textContent = 'It moves while the loop plays, around the value the knob is set to. Export includes it.';
+    row.after(note);
+    renderKnobStrip();
+  }
+
   const voxOf = l => ({ ...ST.VOX_DEFAULT, ...l.sound.vox });
   // Voice FX live on the layer; a word that is sounding restarts with the new voice.
-  function setVox(key, value) {
-    const l = target();
+  function setVox(key, value, l = target()) {
     if (isDrums(l)) return;
     l.sound.vox = { ...voxOf(l), [key]: value };
-    const q = quickControls.get(`vox.${key}`);
+    const q = l === target() && quickControls.get(`vox.${key}`);
     if (q) q.set(value);
     updateCards();
     save();
   }
 
-  function setSound(key, value) {
-    const l = target();
+  function setSound(key, value, l = target()) {
     l.sound[key] = value;
-    const q = quickControls.get(`sound.${key}`);
+    const q = l === target() && quickControls.get(`sound.${key}`);
     if (q) q.set(value);
     markCustom(l);
     engine.updateLayer(l);
     updateCards();
-    const graph = document.querySelector('#panel .env-graph path');
+    const graph = l === target() && document.querySelector('#panel .env-graph path');
     if (graph) graph.setAttribute('d', isDrums(l) ? hitPath(l.sound, 320, 80) : envPath(l.sound, 320, 80));
     if (key === 'register' && !isDrums(l)) requestRender();
     save();
@@ -2195,6 +2300,9 @@
     const kit = e.target.closest('[data-kit]');
     const voxChip = e.target.closest('[data-vox]');
     const myBox = e.target.closest('[data-my-key]');
+    if (e.target.closest('#lfo-switch')) { toggleLfo(); return; }
+    const shape = e.target.closest('[data-lfo-shape]');
+    if (shape) { setLfo('shape', shape.dataset.lfoShape); announce(`LFO shape: ${shape.textContent}`); return; }
     if (myBox) {
       const key = myBox.dataset.myKey, l = target(), list = myList(key), isKit = key === MY_KITS;
       const apply = e.target.closest('[data-my]'), del = e.target.closest('[data-my-del]'), saveBtn = e.target.closest('[data-my-save]');
@@ -2325,6 +2433,7 @@
 
   panelEl.addEventListener('change', e => {
     const { name, value } = e.target;
+    if (e.target.id === 'lfo-target') { setLfo('target', value); announce(`LFO moves ${lfoTargetLabel(value)}`); $('#lfo-target').focus(); return; }
     if (name === 'wave' || name === 'register') {
       setSound(name, value);
       engine.preview(target());
@@ -2346,6 +2455,7 @@
     ui.dock = id;
     document.body.dataset.dock = id;
     if (id === 'mix') renderMixer();
+    if (id === 'perform') renderPerform();
     updateDockHint();
     if (dockCollapsed()) setDockCollapsed(false);
     try { localStorage.setItem(DOCK_KEY, JSON.stringify({ tab: id, collapsed: dockCollapsed() })); } catch (e) { /* storage unavailable */ }
@@ -2362,7 +2472,7 @@
   }
   function updateDockHint() {
     const t = target();
-    $('#dock-hint').textContent = ui.dock === 'sound' ? `Sound of ${t.name}` : ui.dock === 'drums' ? `Drums · ${drumState()}` : 'Volume, pan and levels';
+    $('#dock-hint').textContent = ui.dock === 'sound' ? `Sound of ${t.name}` : ui.dock === 'drums' ? `Drums · ${drumState()}` : ui.dock === 'perform' ? 'Scenes, macros and keys for playing live' : 'Volume, pan, sends and levels';
   }
   dockTabs.forEach(t => {
     t.addEventListener('click', () => setDockTab(t.id.slice(3)));
@@ -2377,9 +2487,35 @@
 
   // Mix: one strip per layer, the drums and the master. Same values as the layer rows.
   const mixChannels = () => [
-    ...project.layers.map(l => ({ id: l.id, name: l.name, color: l.color, vol: l.volume, pan: l.pan || 0, muted: l.muted, solo: l.solo, meta: presetLabel(l) })),
-    { id: 'drums', name: 'Drums', color: ST.DRUM_COLOR, vol: project.drums.volume, pan: project.drums.pan || 0, muted: project.drums.muted, solo: project.drums.solo, meta: drumKitLabel(project.drums) },
+    ...project.layers.map(l => ({ id: l.id, name: l.name, color: l.color, vol: l.volume, pan: l.pan || 0, send: l.send, muted: l.muted, solo: l.solo, meta: presetLabel(l) })),
+    { id: 'drums', name: 'Drums', color: ST.DRUM_COLOR, vol: project.drums.volume, pan: project.drums.pan || 0, send: project.drums.send, muted: project.drums.muted, solo: project.drums.solo, meta: drumKitLabel(project.drums) },
   ];
+  const filterText = v => (Math.abs(v) < 1 ? 'Open' : v < 0 ? `Darker ${Math.round(-v)}%` : `Thinner ${Math.round(v)}%`);
+  const ECHO_SYNCS = [['1/4', '1/4'], ['1/8', '1/8'], ['3/16', '1/8 dotted'], ['1/16', '1/16']];
+  // One send to the shared Room or Echo, per channel.
+  function setSend(id, which, v) {
+    const owner = id === 'drums' ? project.drums : project.layers.find(l => l.id === id);
+    if (!owner) return;
+    owner.send = { room: 0, echo: 0, ...owner.send, [which]: Math.max(0, Math.min(100, v)) };
+    engine.updateLayer(owner);
+    const el = mixEl.querySelector(`[data-path="mix.${id}.${which}"]`);
+    if (el) el.value = Math.round(owner.send[which]);
+    save();
+  }
+  function setMaster(key, v) {
+    const m = project.master;
+    if (key === 'filter') m.filter = Math.max(-100, Math.min(100, v));
+    else if (key === 'roomlevel') m.room.level = v;
+    else if (key === 'roomsize') m.room.size = v;
+    else if (key === 'echolevel') m.echo.level = v;
+    else if (key === 'feedback') m.echo.feedback = v;
+    else if (key === 'sync') m.echo.sync = v;
+    engine.updateMaster();
+    const el = mixEl.querySelector(`[data-path="master.${key}"]`);
+    if (el) el.value = key === 'roomsize' ? v * 10 : v;
+    if (key === 'filter') { const t = mixEl.querySelector('.mix-filter-val'); if (t) t.textContent = filterText(m.filter); }
+    save();
+  }
   function renderMixer() {
     if (ui.dock !== 'mix') return;
     const strip = ch => `
@@ -2387,17 +2523,42 @@
         <span class="mix-name"><span class="swatch" aria-hidden="true"></span>${esc(ch.name)}</span>
         <span class="mix-meta">${esc(ch.meta)}</span>
         <div class="mix-fader-row">
-          <input type="range" class="mix-fader" min="0" max="100" value="${Math.round(ch.vol * 100)}" data-mix="volume" data-id="${ch.id}" aria-label="${esc(ch.name)} volume" aria-orientation="vertical">
+          <input type="range" class="mix-fader" min="0" max="100" value="${Math.round(ch.vol * 100)}" data-mix="volume" data-id="${ch.id}" data-path="mix.${ch.id}.volume" aria-label="${esc(ch.name)} volume" aria-orientation="vertical">
           <div class="mix-meter" aria-hidden="true"><i data-meter="${ch.id}"></i></div>
         </div>
         <span class="mix-vol">${Math.round(ch.vol * 100)}%</span>
-        <input type="range" class="pan mix-pan" min="-100" max="100" value="${Math.round(ch.pan * 100)}" data-mix="pan" data-id="${ch.id}" aria-label="${esc(ch.name)} pan" aria-valuetext="${panText(ch.pan)}" title="Pan: ${panText(ch.pan)} (double-click to centre)">
+        <input type="range" class="pan mix-pan" min="-100" max="100" value="${Math.round(ch.pan * 100)}" data-mix="pan" data-id="${ch.id}" data-path="mix.${ch.id}.pan" aria-label="${esc(ch.name)} pan" aria-valuetext="${panText(ch.pan)}" title="Pan: ${panText(ch.pan)} (double-click to centre)">
+        <div class="mix-sends">
+          <label class="mix-send" title="Send to the shared Room"><span>Room</span><input type="range" min="0" max="100" value="${Math.round(ch.send.room || 0)}" data-mix="room" data-id="${ch.id}" data-path="mix.${ch.id}.room" aria-label="${esc(ch.name)} send to Room"></label>
+          <label class="mix-send" title="Send to the shared Echo"><span>Echo</span><input type="range" min="0" max="100" value="${Math.round(ch.send.echo || 0)}" data-mix="echo" data-id="${ch.id}" data-path="mix.${ch.id}.echo" aria-label="${esc(ch.name)} send to Echo"></label>
+        </div>
         <div class="msv" role="group" aria-label="${esc(ch.name)} switches">
           <button type="button" class="msv-btn msv-m" data-mix="mute" data-id="${ch.id}" aria-pressed="${ch.muted}" aria-label="Mute ${esc(ch.name)}">M</button>
           <button type="button" class="msv-btn msv-s" data-mix="solo" data-id="${ch.id}" aria-pressed="${ch.solo}" aria-label="Solo ${esc(ch.name)}">S</button>
         </div>
       </div>`;
-    $('#mix-strips').innerHTML = mixChannels().map(strip).join('') + `
+    const m = project.master;
+    const returns = `
+      <div class="mix-strip mix-return" style="--layer:var(--hue-timefx)" role="group" aria-label="Room, shared reverb">
+        <span class="mix-name">Room</span>
+        <span class="mix-meta">Shared reverb</span>
+        <div class="mix-fader-row">
+          <input type="range" class="mix-fader" min="0" max="100" value="${Math.round(m.room.level)}" data-mix="master" data-key="roomlevel" data-path="master.roomlevel" aria-label="Room level" aria-orientation="vertical">
+        </div>
+        <span class="mix-vol">${Math.round(m.room.level)}%</span>
+        <label class="mix-send"><span>Size</span><input type="range" min="5" max="60" value="${Math.round(m.room.size * 10)}" data-mix="master" data-key="roomsize" data-path="master.roomsize" aria-label="Room size"></label>
+      </div>
+      <div class="mix-strip mix-return" style="--layer:var(--hue-timefx)" role="group" aria-label="Echo, shared delay">
+        <span class="mix-name">Echo</span>
+        <span class="mix-meta">Shared delay</span>
+        <div class="mix-fader-row">
+          <input type="range" class="mix-fader" min="0" max="100" value="${Math.round(m.echo.level)}" data-mix="master" data-key="echolevel" data-path="master.echolevel" aria-label="Echo level" aria-orientation="vertical">
+        </div>
+        <span class="mix-vol">${Math.round(m.echo.level)}%</span>
+        <label class="mix-send"><span>Repeats</span><input type="range" min="0" max="90" value="${Math.round(m.echo.feedback)}" data-mix="master" data-key="feedback" data-path="master.feedback" aria-label="Echo repeats"></label>
+        <select class="mix-sync" data-mix="sync" aria-label="Echo time">${ECHO_SYNCS.map(([v, lab]) => `<option value="${v}"${v === m.echo.sync ? ' selected' : ''}>${lab}</option>`).join('')}</select>
+      </div>`;
+    $('#mix-strips').innerHTML = mixChannels().map(strip).join('') + returns + `
       <div class="mix-strip mix-master" role="group" aria-label="Master">
         <span class="mix-name">Master</span>
         <span class="mix-meta">Speakers</span>
@@ -2406,13 +2567,23 @@
           <div class="mix-meter" aria-hidden="true"><i data-meter="master"></i></div>
         </div>
         <span class="mix-vol">${Math.round(prefs.volume / 0.9 * 100)}%</span>
-        <span class="mix-meta">Limiter on</span>
+        <label class="mix-send" title="DJ filter: left darker, right thinner (double-click to open)"><span>Filter</span><input type="range" class="pan" min="-100" max="100" value="${Math.round(m.filter)}" data-mix="master" data-key="filter" data-path="master.filter" aria-label="Master filter" aria-valuetext="${filterText(m.filter)}"></label>
+        <span class="mix-meta mix-filter-val">${filterText(m.filter)}</span>
       </div>`;
+    renderKnobStrip(); // learned-control badges
   }
   const mixEl = $('#mix-strips');
   mixEl.addEventListener('input', e => {
     const el = e.target, id = el.dataset.id, v = Number(el.value);
     if (el.dataset.mix === 'pan') { setPan(id, v / 100); el.setAttribute('aria-valuetext', panText(v / 100)); return; }
+    if (el.dataset.mix === 'room' || el.dataset.mix === 'echo') { setSend(id, el.dataset.mix, v); return; }
+    if (el.dataset.mix === 'master' && el.dataset.key) {
+      setMaster(el.dataset.key, el.dataset.key === 'roomsize' ? v / 10 : v);
+      if (el.dataset.key === 'filter') el.setAttribute('aria-valuetext', filterText(v));
+      const vol = el.closest('.mix-strip').querySelector('.mix-vol');
+      if (vol && /level$/.test(el.dataset.key)) vol.textContent = `${v}%`;
+      return;
+    }
     if (el.dataset.mix === 'master') { prefs.volume = v / 100 * 0.9; writeJSON(PREFS_KEY, prefs); applyPrefs(); el.closest('.mix-strip').querySelector('.mix-vol').textContent = `${v}%`; return; }
     if (el.dataset.mix !== 'volume') return;
     el.closest('.mix-strip').querySelector('.mix-vol').textContent = `${v}%`;
@@ -2424,7 +2595,11 @@
     if (row) row.value = v;
     save();
   });
-  mixEl.addEventListener('dblclick', e => { if (e.target.dataset.mix === 'pan') { setPan(e.target.dataset.id, 0); renderMixer(); } });
+  mixEl.addEventListener('dblclick', e => {
+    if (e.target.dataset.mix === 'pan') { setPan(e.target.dataset.id, 0); renderMixer(); }
+    if (e.target.dataset.key === 'filter') { setMaster('filter', 0); renderMixer(); }
+  });
+  mixEl.addEventListener('change', e => { if (e.target.dataset.mix === 'sync') { setMaster('sync', e.target.value); announce(`Echo every ${e.target.selectedOptions[0].textContent}`); } });
   mixEl.addEventListener('click', e => {
     const b = e.target.closest('button[data-mix]');
     if (!b) return;
@@ -2488,6 +2663,7 @@
     if (!engine.playing) return;
     const p = engine.position();
     if (p.done) { finishPlayback(); return; }
+    if (ui.scenePending && p.u >= ui.scenePending.u - 0.005) { ui.scenePending = null; renderScenes(); }
     render();
     renderTimeline();
     renderDrums();
@@ -2505,6 +2681,7 @@
     const p = engine.position();
     ui.pausedAt = p ? p.u : null;
     engine.stop();
+    if (ui.scenePending) { ui.scenePending = null; renderScenes(); }
     updateTransport();
     requestRender();
   }
@@ -2513,8 +2690,11 @@
     engine.stop();
     engine.monitorEnd();
     engine.setBend(0);
+    releaseNotes();
     ui.held = [];
+    ui.latched = null;
     applyHeld(); // drops any key FX at once (nothing is playing, so no beat to wait for)
+    if (ui.scenePending) { ui.scenePending = null; renderScenes(); }
     ui.pausedAt = null;
     updateTransport();
     updateReadout(ui.startPos);
@@ -2688,7 +2868,7 @@
 
   $('#export').addEventListener('click', () => openAppDialog('export'));
   // ---------- settings window: project, export, settings, privacy, credits ----------
-  const APP_VERSION = '1.0.0';
+  const APP_VERSION = '1.3.0';
   const VERSIONS_KEY = 'sketchtone.versions.v1', PREFS_KEY = 'sketchtone.prefs.v1';
   const appDlg = $('#app-dialog'), adTabs = [...appDlg.querySelectorAll('.ad-tab')];
   const readJSON = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch (e) { return d; } };
@@ -2931,7 +3111,7 @@
   $('#new-project').addEventListener('click', () => {
     if (hasMusic() && !window.confirm('Start a new project? Your current drawing will be cleared.')) return;
     stopAll();
-    project = newProject();
+    project = normalize(newProject());
     past.length = 0;
     future.length = 0;
     ui.startPos = 0;
@@ -2955,8 +3135,7 @@
   const choiceDef = (label, options, get, set) => ({ discrete: true, label, options, get, set });
   const groupOf = panel => (PANELS.find(p => p.id === panel) || {}).group;
 
-  function setVolume(v) {
-    const l = current();
+  function setVolume(v, l = current()) {
     l.volume = v;
     engine.updateLayer(l);
     const input = layerList.querySelector(`.vol[data-id="${l.id}"]`);
@@ -2975,8 +3154,10 @@
     if (radio) radio.checked = true;
   }
 
-  function paramDef(path) {
-    const [kind, a, b] = path, l = current();
+  // owner: a fixed layer (or the drums) instead of the selected one (macros, layer-specific MIDI).
+  function paramDef(path, owner) {
+    const [kind, a, b] = path, t = owner || target(), l = owner && !isDrums(owner) ? owner : current(), shown = t === target();
+    const sync = (p, v) => { if (shown) syncControl(p, v); };
     if (kind === 'etch') {
       return a === 'x'
         ? { label: 'Etch: time', min: 0, max: 1, step: 0.002, fmt: v => barBeat(v * L()), get: () => ui.etch.x, set: v => { etchTo(v, ui.etch.y); etchX.set(v); } }
@@ -2991,7 +3172,12 @@
       if (!s && !d.style) return { ...d, idle: 'select a line first' };
       return { ...d, get: () => sign * (s ? tfOf(s.item)[a] : ui.brushTf[a]), set: v => setDraw(a, sign * v, d.style) };
     }
-    if (kind === 'volume') return { label: 'Volume', min: 0, max: 1, step: 0.01, fmt: v => `${Math.round(v * 100)}%`, get: () => l.volume, set: setVolume };
+    if (kind === 'volume') return { label: 'Volume', min: 0, max: 1, step: 0.01, fmt: v => `${Math.round(v * 100)}%`, get: () => l.volume, set: v => setVolume(v, l) };
+    if (kind === 'lfo') {
+      const lfo = () => ({ ...ST.LFO_DEFAULT, ...t.lfo });
+      if (a === 'rate') return { label: 'LFO speed', min: 0, max: ST.LFO_RATES.length - 1, step: 1, fmt: i => rateLabel(ST.LFO_RATES[i]), get: () => Math.max(0, ST.LFO_RATES.indexOf(lfo().rate)), set: i => { setLfo('rate', ST.LFO_RATES[i], t); sync(path, i); } };
+      return { label: 'LFO depth', min: 0, max: 100, step: 1, fmt: v => `${Math.round(v)}%`, get: () => lfo().depth, set: v => { setLfo('depth', v, t); sync(path, v); } };
+    }
     if (kind === 'layer') return choiceDef('Layer', project.layers.map(x => [x.id, x.name]), () => project.selected, selectLayer);
     if (kind === 'page') return choiceDef('Page', PAGES, () => ui.panel, setPanel);
     if (kind === 'fxsel') {
@@ -3006,24 +3192,24 @@
     }
     if (kind === 'vox') {
       const k = VOX_KNOBS[a];
-      if (isDrums(target())) return { label: `Voice ${k.label.toLowerCase()}`, idle: 'the drum layer has no voice' };
-      return { ...k, short: k.label, label: `Voice ${k.label.toLowerCase()}`, get: () => voxOf(target())[a], set: v => { setVox(a, v); syncControl(path, v); } };
+      if (isDrums(t)) return { label: `Voice ${k.label.toLowerCase()}`, idle: 'the drum layer has no voice' };
+      return { ...k, short: k.label, label: `Voice ${k.label.toLowerCase()}`, get: () => voxOf(t)[a], set: v => { setVox(a, v, t); sync(path, v); } };
     }
-    if (kind === 'sound' && isDrums(target())) {
+    if (kind === 'sound' && isDrums(t)) {
       const k = ST.DRUM_PANELS.source.concat(ST.DRUM_PANELS.envelope).find(x => x.key === a);
       if (!k) return { label: (SOUND_KNOBS[a] || { label: a }).label, idle: 'not used by the drum layer' };
-      return { ...k, short: k.label, label: `Drums ${k.label.toLowerCase()}`, get: () => project.drums.sound[a], set: v => { setSound(a, v); syncControl(path, v); } };
+      return { ...k, short: k.label, label: `Drums ${k.label.toLowerCase()}`, get: () => project.drums.sound[a], set: v => { setSound(a, v, t); sync(path, v); } };
     }
     if (kind === 'sound') {
-      const set = v => { setSound(a, v); syncControl(path, v); };
+      const set = v => { setSound(a, v, l); sync(path, v); };
       if (a === 'wave') return choiceDef('Waveform', WAVES.map(w => [w.id, w.label]), () => l.sound.wave, set);
       if (a === 'register') return choiceDef('Pitch range', REGISTERS.map(r => [r.id, r.label]), () => l.sound.register, set);
       return { ...SOUND_KNOBS[a], get: () => l.sound[a], set };
     }
     if (kind === 'fx') {
-      const l = target(), f = FX_BY_ID[a], c = f.params.find(p => p.key === b);
+      const l = t, f = FX_BY_ID[a], c = f.params.find(p => p.key === b);
       const label = c.label.toLowerCase() === f.label.toLowerCase() ? f.label : `${f.label} ${c.label.toLowerCase()}`;
-      const set = v => { setFx(a, b, v, c.sets); syncControl(path, v); };
+      const set = v => { setFx(a, b, v, c.sets, l); sync(path, v); };
       if (c.kind === 'choice') return choiceDef(label, c.options, () => String(l.fx[a][b]), set);
       if (c.kind === 'toggle') return choiceDef(label, [[false, 'Off'], [true, 'On']], () => !!l.fx[a][b], set);
       return { ...c, label, get: () => l.fx[a][b], set };
@@ -3041,42 +3227,43 @@
   }
 
   // Smooth mode keeps an unrounded value per knob so coarse steps still move.
-  const raw = Array(8).fill(null), acc = Array(8).fill(0);
+  const raw = new Map(), acc = new Map();
   function applyMove(k, move) {
-    if (learning) { finishLearn(k); return; }
     const path = knobTargets()[k];
     if (!path) { showHud(k, 'Not used on this page', '', null); return; }
-    const d = paramDef(path), key = pathKey(path) + (path[0] === 'draw' && ui.sel ? `:${ui.sel.id}` : '');
-    if (d.idle) { showHud(k, d.label, d.idle, null); return; }
+    turn(k, k, paramDef(path), move, pathKey(path) + (path[0] === 'draw' && ui.sel ? `:${ui.sel.id}` : ''));
+    const cell = document.querySelector(`#ks-list li[data-k="${k}"]`);
+    if (cell) { cell.classList.add('is-hot'); clearTimeout(cell._t); cell._t = setTimeout(() => cell.classList.remove('is-hot'), 350); }
+  }
+  // One controller move on one control (a K-knob, or any learned CC).
+  function turn(slot, hudLabel, d, move, key = slot) {
+    if (d.idle) { showHud(hudLabel, d.label, d.idle, null); return; }
     if (d.discrete) {
       const opts = d.options, i = Math.max(0, opts.findIndex(o => o[0] === d.get()));
       let n = i;
       if (move.abs != null) {
         n = Math.round(move.abs * (opts.length - 1));
       } else {
-        const ticks = path[0] === 'page' ? 10 : 6; // pages need a firmer turn
-        acc[k] += move.delta * 127;
-        while (acc[k] >= ticks) { n++; acc[k] -= ticks; }
-        while (acc[k] <= -ticks) { n--; acc[k] += ticks; }
+        const ticks = d.label === 'Page' ? 10 : 6; // pages need a firmer turn
+        let a = (acc.get(slot) || 0) + move.delta * 127;
+        while (a >= ticks) { n++; a -= ticks; }
+        while (a <= -ticks) { n--; a += ticks; }
+        acc.set(slot, a);
         n = Math.max(0, Math.min(opts.length - 1, n));
       }
       if (n !== i) d.set(opts[n][0]);
-      if (opts.length < 2) showHud(k, d.label, `${opts[n][1]} (only one: add more)`, null);
-      else showHud(k, d.label, opts[n][1], n / (opts.length - 1));
-    } else {
-      const range = d.max - d.min, cur = d.get();
-      const r = raw[k];
-      let v = r && r.key === key && Math.abs(r.v - cur) <= d.step ? r.v : cur;
-      v = move.abs != null ? d.min + move.abs * range : v + move.delta * range;
-      v = Math.min(d.max, Math.max(d.min, v));
-      raw[k] = { key, v };
-      const dec = (String(d.step).split('.')[1] || '').length;
-      const snapped = +(Math.round((v - d.min) / d.step) * d.step + d.min).toFixed(dec);
-      if (snapped !== cur) d.set(snapped);
-      showHud(k, d.label, d.fmt(snapped), (snapped - d.min) / range);
+      if (opts.length < 2) showHud(hudLabel, d.label, `${opts[n][1]} (only one: add more)`, null);
+      else showHud(hudLabel, d.label, opts[n][1], n / (opts.length - 1));
+      return;
     }
-    const cell = document.querySelector(`#ks-list li[data-k="${k}"]`);
-    if (cell) { cell.classList.add('is-hot'); clearTimeout(cell._t); cell._t = setTimeout(() => cell.classList.remove('is-hot'), 350); }
+    const range = d.max - d.min, cur = d.get(), r = raw.get(slot);
+    let v = r && r.key === key && Math.abs(r.v - cur) <= d.step ? r.v : cur;
+    v = move.abs != null ? d.min + move.abs * range : v + move.delta * range;
+    v = Math.min(d.max, Math.max(d.min, v));
+    raw.set(slot, { key, v });
+    const snapped = snapDef(d, v);
+    if (snapped !== cur) d.set(snapped);
+    showHud(hudLabel, d.label, d.fmt(snapped), (snapped - d.min) / range);
   }
 
   const hud = $('#knob-hud');
@@ -3096,7 +3283,7 @@
     const on = midi.status.connected && midi.status.inputs.length > 0;
     document.body.classList.toggle('midi-on', on);
     // The line bar already shows K1–K8 for drawing; the strip is for the other knob modes.
-    const special = ui.drumMpk || ui.patternOpen || ui.etch.on || Object.keys(midi.settings.pins).length > 0;
+    const special = ui.drumMpk || ui.patternOpen || ui.etch.on;
     $('#knob-strip').hidden = !on || !special;
     syncLineBar();
     const targets = knobTargets();
@@ -3107,57 +3294,25 @@
       return `<li data-k="${k}" class="${pinned ? 'is-pinned' : ''}${path ? '' : ' is-empty'}"><b>K${k + 1}</b><span>${path ? esc(paramDef(path).label) : '—'}</span>${pinned ? '<span class="sr-only">, pinned</span>' : ''}</li>`;
     }).join('');
     document.querySelectorAll('.k-badge').forEach(b => b.remove());
+    const badge = (el, text, learned) => {
+      const b = document.createElement('span');
+      b.className = `k-badge${learned ? ' is-pinned' : ''}`;
+      b.textContent = text;
+      b.setAttribute('aria-hidden', 'true');
+      if (el.tagName === 'INPUT') (el.closest('label') || el.parentElement).append(b);
+      else (el.querySelector(':scope > .knob-label, :scope > legend, :scope > .scene-num') || el).append(b);
+    };
+    if (!on) return;
     targets.forEach((path, k) => {
       if (!path) return;
       const el = document.querySelector(`#panel [data-path="${pathKey(path)}"], #drum-card [data-path="${pathKey(path)}"], #line-bar [data-path="${pathKey(path)}"]`);
-      if (!el) return;
-      const badge = document.createElement('span');
-      badge.className = `k-badge${midi.settings.pins[k] ? ' is-pinned' : ''}`;
-      badge.textContent = `K${k + 1}`;
-      badge.setAttribute('aria-hidden', 'true');
-      (el.querySelector(':scope > .knob-label, :scope > legend') || el).append(badge);
+      if (el) badge(el, `K${k + 1}`, false);
     });
-  }
-
-  // Pinning: press L on a focused knob (or Alt-click it), then turn a controller knob.
-  let learning = null;
-  function startLearn(el) {
-    const host = el.closest('[data-path]');
-    if (!host) return;
-    cancelLearn();
-    if (!midi.status.connected) midi.connect();
-    learning = { path: host.dataset.path.split('.'), el: host };
-    host.classList.add('is-learning');
-    announce(`Turn a knob on your controller to pin it to ${paramDef(learning.path).label}. Escape cancels.`);
-  }
-  function finishLearn(k) {
-    const path = learning.path, key = pathKey(path), label = paramDef(path).label;
-    for (const j in midi.settings.pins) if (pathKey(midi.settings.pins[j]) === key) delete midi.settings.pins[j];
-    midi.settings.pins[k] = path;
-    midi.save();
-    cancelLearn();
-    renderKnobStrip();
-    renderPins();
-    showHud(k, label, 'pinned', null);
-    announce(`K${k + 1} now controls ${label} on every page`);
-  }
-  function cancelLearn() {
-    if (!learning) return;
-    learning.el.classList.remove('is-learning');
-    learning = null;
-  }
-  panelEl.addEventListener('keydown', e => {
-    if ((e.key === 'l' || e.key === 'L') && !e.metaKey && !e.ctrlKey && !e.altKey && e.target.closest('.knob')) {
-      e.preventDefault();
-      startLearn(e.target);
+    for (const path of Object.values(midi.settings.learned)) { // learned controls show their controller input
+      const lab = midi.learnedFor(path);
+      for (const el of document.querySelectorAll(`[data-learn="${path}"], [data-path="${path}"]`)) if (lab) badge(el, lab.label, true);
     }
-  });
-  panelEl.addEventListener('pointerdown', e => {
-    if (!e.altKey || !e.target.closest('.knob')) return;
-    e.preventDefault();
-    e.stopPropagation();
-    startLearn(e.target);
-  }, true);
+  }
 
   // Settings dialog
   const dlg = $('#midi-dialog');
@@ -3176,16 +3331,10 @@
     $('#md-setup').innerHTML = midi.settings.ccs.map((cc, k) => `
       <li class="${k === active ? 'is-active' : ''}${cc != null && active == null ? ' is-done' : ''}"><b>K${k + 1}</b><span>${active != null ? (k < active ? '✓' : k === active ? 'turn' : '') : cc != null ? `CC ${cc}` : '—'}</span></li>`).join('');
   }
-  function renderPins() {
-    const pins = Object.entries(midi.settings.pins);
-    $('#md-pins').innerHTML = pins.length
-      ? pins.map(([k, path]) => `<li><b>K${+k + 1}</b><span>${esc(paramDef(path).label)}</span><button type="button" class="btn btn-small" data-unpin="${k}">Unpin</button></li>`).join('')
-      : '<li class="md-empty">No pinned knobs yet.</li>';
-  }
   function renderDialog() {
     renderMidiStatus();
     renderSetup(null);
-    renderPins();
+    renderLearned();
     const st = midi.settings;
     dlg.querySelector(`input[name="md-mode"][value="${st.mode}"]`).checked = true;
     dlg.querySelector(`input[name="md-speed"][value="${st.speed}"]`).checked = true;
@@ -3197,6 +3346,7 @@
     dlg.showModal();
   });
   dlg.addEventListener('close', () => { midi.cancelSetup(); $('#midi-btn').focus(); });
+  $('#md-learn-help').textContent = 'To learn: focus any knob, slider or scene pad and press L (or Alt-click it), then turn a knob or press a pad on your controller.';
   dlg.addEventListener('change', e => {
     const st = midi.settings;
     if (e.target.name === 'md-mode') st.mode = e.target.value;
@@ -3206,11 +3356,11 @@
     renderKnobStrip();
   });
   dlg.addEventListener('click', e => {
-    const unpin = e.target.closest('[data-unpin]');
+    const unpin = e.target.closest('[data-unlearn]');
     if (!unpin) return;
-    delete midi.settings.pins[unpin.dataset.unpin];
+    delete midi.settings.learned[unpin.dataset.unlearn];
     midi.save();
-    renderPins();
+    renderLearned();
     renderKnobStrip();
     const next = $('#md-pins').querySelector('button');
     (next || $('#md-setup-btn')).focus();
@@ -3254,6 +3404,7 @@
   const PAD_SLICES = 8;
   midi.on('pad', (i, vel, on) => {
     if (!on) return;
+    if (perf.pads === 'scenes') { sceneButton(i % SCENES); showHud(`P${i + 1}`, 'Scene', project.scenes[i % SCENES] ? project.scenes[i % SCENES].name : 'saved', null); return; }
     const slice = i % PAD_SLICES, len = L(), at = slice * len / PAD_SLICES, p = engine.position();
     playFrom(p ? Math.floor(p.u / len) * len + at : at); // keep the pass, so ping-pong stays in step
     ui.padFlash = { slice, until: performance.now() + 450 };
@@ -3280,7 +3431,8 @@
     return next - pos.u;
   }
   function applyHeld() {
-    const top = [...ui.held].reverse().find(n => fxForKey(n));
+    const latched = perf.keys === 'fx' && perf.latch;
+    const top = latched ? (ui.latched != null && fxForKey(ui.latched) ? ui.latched : null) : perf.keys === 'fx' ? [...ui.held].reverse().find(n => fxForKey(n)) : undefined;
     const fx = top != null ? fxForKey(top).fx : null;
     const label = top != null ? `Key ${noteName(top)}${keyFx[top] ? '' : ' (default)'}: ${fxNames(fx)}` : '';
     const badge = $('#keyfx-badge'), wait = untilBoundary();
@@ -3302,7 +3454,9 @@
     } else commit();
     renderPiano();
   }
-  function keyDown(note) {
+  function keyDown(note, vel = 100) {
+    if (perf.keys === 'notes') { playNoteOn(note, vel); return; }
+    if (perf.latch) ui.latched = ui.latched === note ? null : note; // press again to let go
     if (!ui.held.includes(note)) ui.held.push(note);
     ui.keySel = note;
     if (note < ui.keyBase || note > ui.keyBase + 24) ui.keyBase = Math.max(0, Math.floor(note / 12) * 12);
@@ -3312,10 +3466,11 @@
     renderKeyDetail();
   }
   function keyUp(note) {
+    if (perf.keys === 'notes') { playNoteOff(note); return; }
     ui.held = ui.held.filter(n => n !== note);
-    applyHeld();
+    if (perf.latch) renderPiano(); else applyHeld();
   }
-  midi.on('key', (note, vel, on) => (on ? keyDown(note) : keyUp(note)));
+  midi.on('key', (note, vel, on) => (on ? keyDown(note, vel) : keyUp(note)));
 
   // On-screen keyboard (Keys tab): one tab stop, arrows move between keys.
   const BLACK = [1, 3, 6, 8, 10];
@@ -3325,9 +3480,9 @@
     for (let n = base; n <= base + 24; n++) {
       const black = BLACK.includes(n % 12), has = !!keyFx[n], sel = n === ui.keySel;
       const left = black ? (wi / whites) * 100 - 100 / whites * 0.32 : (wi / whites) * 100;
-      out.push(`<button type="button" class="pk ${black ? 'pk-black' : 'pk-white'}${has ? ' has-fx' : ''}${ui.held.includes(n) ? ' is-held' : ''}"
+      out.push(`<button type="button" class="pk ${black ? 'pk-black' : 'pk-white'}${has && perf.keys === 'fx' ? ' has-fx' : ''}${ui.held.includes(n) || (perf.keys === 'fx' && perf.latch && ui.latched === n) ? ' is-held' : ''}"
         data-note="${n}" tabindex="${sel ? 0 : -1}" aria-pressed="${sel}" style="left:${left.toFixed(3)}%"
-        aria-label="${noteName(n)}${has ? `, ${esc(fxNames(keyFx[n].fx))}` : ', empty'}">${n % 12 === 0 ? `<span>${noteName(n)}</span>` : ''}</button>`);
+        aria-label="${noteName(n)}${perf.keys === 'notes' ? '' : has ? `, ${esc(fxNames(keyFx[n].fx))}` : ', empty'}">${n % 12 === 0 ? `<span>${noteName(n)}</span>` : ''}</button>`);
       if (!black) wi++;
     }
     $('#piano').innerHTML = out.join('');
@@ -3372,8 +3527,25 @@
   }
   $('#piano').addEventListener('click', e => {
     const k = e.target.closest('.pk');
-    if (k) selectKey(Number(k.dataset.note));
+    if (k && perf.keys === 'fx') selectKey(Number(k.dataset.note));
   });
+  let pianoNote = null; // Play notes: the mouse or finger plays the keys
+  $('#piano').addEventListener('pointerdown', e => {
+    const k = e.target.closest('.pk');
+    if (!k || perf.keys !== 'notes') return;
+    engine.ensure();
+    pianoNote = Number(k.dataset.note);
+    playNoteOn(pianoNote);
+  });
+  const pianoUp = () => { if (pianoNote != null) { playNoteOff(pianoNote); pianoNote = null; } };
+  ['pointerup', 'pointerleave', 'pointercancel'].forEach(t => $('#piano').addEventListener(t, pianoUp));
+  $('#piano').addEventListener('keydown', e => {
+    if (perf.keys !== 'notes' || (e.key !== 'Enter' && e.key !== ' ') || e.repeat) return;
+    e.preventDefault();
+    e.stopPropagation();
+    playNoteOn(ui.keySel);
+  });
+  $('#piano').addEventListener('keyup', e => { if (perf.keys === 'notes' && (e.key === 'Enter' || e.key === ' ')) playNoteOff(ui.keySel); });
   $('#piano').addEventListener('keydown', e => {
     const step = { ArrowRight: 1, ArrowUp: 1, ArrowLeft: -1, ArrowDown: -1 }[e.key];
     if (!step) return;
@@ -3435,6 +3607,402 @@
     });
   });
   dlg.addEventListener('close', () => midi.cancelPadSetup());
+
+  // ---------- perform: scenes, macros, controls by name ----------
+  // Every control that macros and MIDI learn can reach, by a path string:
+  // mix.<layer|drums>.volume|pan|room|echo, master.*, all.room|echo, macro.<n>,
+  // at.<layer|drums>.<sound/fx/vox/lfo path> (one fixed layer), or a path that follows the selection.
+  const ownerOf = id => (id === 'drums' ? project.drums : project.layers.find(l => l.id === id));
+  const ownerName = o => (isDrums(o) ? 'Drums' : o.name);
+  const pct100 = v => `${Math.round(v * 100)}%`;
+  function reflect(path, v) { // keep an on-screen range input in step with MIDI and macros
+    for (const el of document.querySelectorAll(`input[type="range"][data-path="${path}"]`)) {
+      el.value = path.endsWith('.volume') ? Math.round(v * 100) : path.endsWith('.pan') ? Math.round(v * 100) : path === 'master.roomsize' ? v * 10 : v;
+    }
+  }
+  function controlDef(str) {
+    const p = String(str).split('.');
+    if (p[0] === 'mix') {
+      const o = ownerOf(p[1]);
+      if (!o) return { label: 'A deleted layer', idle: 'its layer is gone' };
+      const name = ownerName(o);
+      if (p[2] === 'volume') return { label: `${name} volume`, min: 0, max: 1, step: 0.01, fmt: pct100, get: () => o.volume, set: v => { if (isDrums(o)) setDrum('volume', v); else setVolume(v, o); reflect(str, v); } };
+      if (p[2] === 'pan') return { label: `${name} pan`, min: -1, max: 1, step: 0.01, fmt: panText, get: () => o.pan || 0, set: v => { setPan(p[1], v); reflect(str, v); } };
+      return { label: `${name} ${p[2] === 'room' ? 'Room' : 'Echo'} send`, min: 0, max: 100, step: 1, fmt: v => `${Math.round(v)}%`, get: () => (o.send || {})[p[2]] || 0, set: v => setSend(p[1], p[2], v) };
+    }
+    if (p[0] === 'master') {
+      const m = project.master, defs = {
+        filter: ['Master filter', -100, 100, 1, filterText, () => m.filter],
+        roomlevel: ['Room level', 0, 100, 1, v => `${Math.round(v)}%`, () => m.room.level],
+        roomsize: ['Room size', 0.5, 6, 0.1, v => `${v.toFixed(1)} s`, () => m.room.size],
+        echolevel: ['Echo level', 0, 100, 1, v => `${Math.round(v)}%`, () => m.echo.level],
+        feedback: ['Echo repeats', 0, 90, 1, v => `${Math.round(v)}%`, () => m.echo.feedback],
+      }[p[1]];
+      if (!defs) return null;
+      const [label, min, max, step, fmt, get] = defs;
+      return { label, min, max, step, fmt, get, set: v => setMaster(p[1], v) };
+    }
+    if (p[0] === 'all') { // the same send on every layer and the drums
+      const all = () => [...project.layers, project.drums], word = p[1] === 'room' ? 'Room' : 'Echo';
+      return { label: `${word} send, all layers`, min: 0, max: 100, step: 1, fmt: v => `${Math.round(v)}%`,
+        get: () => Math.max(...all().map(o => (o.send || {})[p[1]] || 0)),
+        set: v => { for (const o of all()) setSend(isDrums(o) ? 'drums' : o.id, p[1], v); } };
+    }
+    if (p[0] === 'macro') {
+      const i = Number(p[1]), m = project.macros[i];
+      return m && { label: `Macro ${i + 1}: ${m.name}`, min: 0, max: 100, step: 1, fmt: v => `${Math.round(v)}%`, get: () => m.value * 100, set: v => setMacro(i, v / 100) };
+    }
+    if (p[0] === 'at') {
+      const o = ownerOf(p[1]);
+      if (!o) return { label: 'A deleted layer', idle: 'its layer is gone' };
+      const d = paramDef(p.slice(2), o);
+      return d && { ...d, label: `${ownerName(o)}: ${d.label}` };
+    }
+    return paramDef(p);
+  }
+  const snapDef = (d, v) => {
+    const c = Math.min(d.max, Math.max(d.min, v)), dec = (String(d.step).split('.')[1] || '').length;
+    return +(Math.round((c - d.min) / d.step) * d.step + d.min).toFixed(dec);
+  };
+
+  // Macros: one knob moves several settings, each between its own two values.
+  const macroKnobs = [];
+  function setMacro(i, x) {
+    const m = project.macros[i];
+    m.value = clamp01(x);
+    for (const map of m.maps) {
+      const d = controlDef(map.path);
+      if (!d || d.idle || d.discrete) continue;
+      const v = snapDef(d, map.from + (map.to - map.from) * m.value);
+      if (v !== d.get()) d.set(v);
+    }
+    if (macroKnobs[i]) macroKnobs[i].set(Math.round(m.value * 100));
+    save();
+  }
+  const macroSummary = m => (m.maps.length ? m.maps.map(x => (controlDef(x.path) || { label: x.path }).label).join(', ') : 'Nothing mapped yet');
+  function renderMacros() {
+    const host = $('#macro-row');
+    host.innerHTML = '';
+    macroKnobs.length = 0;
+    project.macros.forEach((m, i) => {
+      const k = createKnob({ label: esc(m.name), min: 0, max: 100, step: 1, value: Math.round(m.value * 100), reset: 0, fmt: v => `${Math.round(v)}%`,
+        hint: `Moves: ${esc(macroSummary(m))}`, onInput: v => setMacro(i, v / 100) });
+      k.el.dataset.path = `macro.${i}`;
+      k.el.classList.toggle('is-idle', !m.maps.length);
+      const edit = document.createElement('button');
+      edit.type = 'button';
+      edit.className = 'macro-edit-btn';
+      edit.dataset.macroEdit = i;
+      edit.textContent = ui.macroSel === i ? 'Editing' : 'Edit';
+      edit.setAttribute('aria-pressed', String(ui.macroSel === i));
+      edit.setAttribute('aria-label', `Edit macro ${i + 1}, ${m.name}`);
+      k.el.append(edit);
+      macroKnobs[i] = k;
+      host.append(k.el);
+    });
+    renderMacroEdit();
+  }
+  // Ready-made targets for the picker (any other knob: map it by turning it).
+  function macroChoices() {
+    const out = [['Master', ['filter', 'roomlevel', 'roomsize', 'echolevel', 'feedback'].map(k => `master.${k}`)], ['All layers', ['all.room', 'all.echo']],
+      ['Drums', ['energy', 'fills', 'gaps', 'dirt', 'evolve', 'swing'].map(k => `drum.${k}`).concat(['mix.drums.volume', 'mix.drums.room', 'mix.drums.echo'])]];
+    for (const l of project.layers) out.push([l.name, ['volume', 'pan', 'room', 'echo'].map(k => `mix.${l.id}.${k}`).concat([`at.${l.id}.sound.brightness`, `at.${l.id}.fx.filter.cutoff`, `at.${l.id}.fx.drive.amount`, `at.${l.id}.lfo.depth`])]);
+    return out;
+  }
+  function renderMacroEdit() {
+    const box = $('#macro-edit'), i = ui.macroSel, m = project.macros[i];
+    box.hidden = i == null;
+    if (i == null) return;
+    const val = (d, v) => (d && !d.idle ? d.fmt(v) : String(v));
+    box.innerHTML = `
+      <div class="me-head">
+        <label class="me-name"><span class="sr-only">Macro name</span><input type="text" id="me-name" maxlength="16" value="${esc(m.name)}"></label>
+        <button type="button" class="btn btn-small me-map" id="me-map" aria-pressed="${ui.macroMap === i}">${ui.macroMap === i ? 'Turn any knob now… (Esc)' : 'Map: turn a knob'}</button>
+        <label class="me-add"><span class="sr-only">Add a target</span><select id="me-add"><option value="">Add a target…</option>${macroChoices().map(([g, paths]) =>
+          `<optgroup label="${esc(g)}">${paths.map(pth => `<option value="${pth}">${esc((controlDef(pth) || { label: pth }).label)}</option>`).join('')}</optgroup>`).join('')}</select></label>
+        <button type="button" class="icon-btn" id="me-close" aria-label="Close macro editor">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <ul class="me-list">${m.maps.length ? m.maps.map((x, j) => { const d = controlDef(x.path); return `
+        <li><span class="me-target">${esc(d ? d.label : x.path)}</span><span class="me-range">${esc(val(d, x.from))} → ${esc(val(d, x.to))}</span>
+          <button type="button" class="dev-btn" data-me-flip="${j}">Flip</button>
+          <button type="button" class="icon-btn" data-me-del="${j}" aria-label="Remove ${esc(d ? d.label : x.path)}">${ICON.trash}</button></li>`; }).join('')
+        : '<li class="me-empty">Press Map, then turn any knob or slider in Sound, Drums or Mix: the macro will move it from where it was to where you leave it.</li>'}</ul>`;
+  }
+  function addMacroMap(i, path, from, to) {
+    const m = project.macros[i];
+    m.maps = m.maps.filter(x => x.path !== path).concat({ path, from, to });
+    m.maps.length = Math.min(m.maps.length, 8);
+    save();
+    renderMacros();
+  }
+  // Map by turning: remember where the knob was when you grabbed it, and where you left it.
+  function macroPathFor(path) {
+    const k = path.split('.')[0], owner = ui.drumSel ? 'drums' : current().id;
+    if (['mix', 'master', 'all', 'drum', 'at'].includes(k)) return path;
+    if (['sound', 'fx', 'vox', 'lfo'].includes(k)) return `at.${owner}.${path}`;
+    if (k === 'volume') return `mix.${current().id}.volume`;
+    return null;
+  }
+  function setMacroMap(i) {
+    ui.macroMap = i;
+    document.body.classList.toggle('macro-mapping', i != null);
+    $('#map-toast').hidden = i == null;
+    if (i != null) $('#map-toast').textContent = `Mapping macro ${i + 1} “${project.macros[i].name}”: turn any knob or slider. Esc cancels.`;
+    renderMacroEdit();
+  }
+  function grabForMacro(e) {
+    if (ui.macroMap == null || ui.macroGrab) return;
+    const host = e.target.closest && e.target.closest('[data-path]');
+    if (!host || host.closest('#macro-row') || host.closest('#macro-edit')) return;
+    const path = macroPathFor(host.dataset.path), d = path && controlDef(path);
+    if (!d || d.idle || d.discrete) { announce('A macro cannot move that one. Try a knob or a slider.'); return; }
+    ui.macroGrab = { path, from: d.get() };
+  }
+  function releaseForMacro() {
+    const g = ui.macroGrab, i = ui.macroMap;
+    if (!g || i == null) return;
+    ui.macroGrab = null;
+    setTimeout(() => {
+      const d = controlDef(g.path);
+      let to = d.get();
+      if (Math.abs(to - g.from) < 1e-9) to = g.from < (d.min + d.max) / 2 ? d.max : d.min; // a click: the whole way
+      project.macros[i].value = 1;
+      setMacroMap(null);
+      addMacroMap(i, g.path, g.from, to);
+      announce(`Macro ${i + 1} now moves ${d.label} from ${d.fmt(g.from)} to ${d.fmt(to)}`);
+    }, 0);
+  }
+  document.addEventListener('pointerdown', grabForMacro, true);
+  document.addEventListener('pointerup', releaseForMacro, true);
+  document.addEventListener('keydown', e => { if (/^(Arrow|Page|Home|End)/.test(e.key)) grabForMacro(e); }, true);
+  document.addEventListener('keyup', e => { if (/^(Arrow|Page|Home|End)/.test(e.key)) releaseForMacro(); }, true);
+
+  const performEl = $('#perform');
+  performEl.addEventListener('click', e => {
+    const ed = e.target.closest('[data-macro-edit]');
+    if (ed) { const i = Number(ed.dataset.macroEdit); ui.macroSel = ui.macroSel === i ? null : i; if (ui.macroSel == null) setMacroMap(null); renderMacros(); return; }
+    if (e.target.closest('#me-close')) { ui.macroSel = null; setMacroMap(null); renderMacros(); return; }
+    if (e.target.closest('#me-map')) { setMacroMap(ui.macroMap === ui.macroSel ? null : ui.macroSel); if (ui.macroMap != null) announce('Now turn any knob or slider, in Sound, Drums or Mix'); return; }
+    const flip = e.target.closest('[data-me-flip]'), del = e.target.closest('[data-me-del]');
+    if (flip || del) {
+      const m = project.macros[ui.macroSel], j = Number((flip || del).dataset[flip ? 'meFlip' : 'meDel']);
+      if (flip) { const x = m.maps[j]; [x.from, x.to] = [x.to, x.from]; } else m.maps.splice(j, 1);
+      save();
+      renderMacros();
+      return;
+    }
+    const sc = e.target.closest('[data-scene]'), scSave = e.target.closest('[data-scene-save]'), scDel = e.target.closest('[data-scene-del]');
+    if (scSave) { saveScene(Number(scSave.dataset.sceneSave)); return; }
+    if (scDel) {
+      const i = Number(scDel.dataset.sceneDel);
+      if (!window.confirm(`Clear ${project.scenes[i].name}?`)) return;
+      project.scenes[i] = null;
+      if (ui.sceneActive === i) ui.sceneActive = null;
+      save();
+      renderScenes();
+      announce(`Scene ${i + 1} cleared`);
+      return;
+    }
+    if (sc) sceneButton(Number(sc.dataset.scene));
+  });
+  performEl.addEventListener('change', e => {
+    if (e.target.id === 'me-add' && e.target.value) {
+      const d = controlDef(e.target.value), from = d.get();
+      addMacroMap(ui.macroSel, e.target.value, from, from < (d.min + d.max) / 2 ? d.max : d.min);
+      announce(`Macro ${ui.macroSel + 1} now moves ${d.label}`);
+      $('#me-add').focus();
+    } else if (e.target.id === 'me-name') {
+      project.macros[ui.macroSel].name = e.target.value.trim() || `Macro ${ui.macroSel + 1}`;
+      save();
+      renderMacros();
+    } else if (e.target.name === 'pf-launch' || e.target.name === 'pf-pads' || e.target.name === 'pf-keys' || e.target.name === 'pf-hold' || e.target.id === 'pf-inkey') {
+      if (e.target.name === 'pf-launch') perf.launch = e.target.value;
+      if (e.target.name === 'pf-pads') perf.pads = e.target.value;
+      if (e.target.name === 'pf-keys') { perf.keys = e.target.value; releaseNotes(); ui.held = []; ui.latched = null; applyHeld(); }
+      if (e.target.name === 'pf-hold') { perf.latch = e.target.value === 'latch'; ui.latched = null; applyHeld(); }
+      if (e.target.id === 'pf-inkey') perf.inKey = e.target.checked;
+      writeJSON(PERF_KEY, perf);
+      syncPerformControls();
+    }
+  });
+
+  // Scenes: a snapshot of every layer's drawing (and the drum line), launched in time.
+  const sceneSnap = () => ({
+    layers: Object.fromEntries(project.layers.map(l => [l.id, JSON.parse(JSON.stringify(l.strokes))])),
+    drums: JSON.parse(JSON.stringify({ curve: project.drums.curve, pattern: project.drums.pattern || [], frozen: !!project.drums.frozen, seed: project.drums.seed, muted: project.drums.muted })),
+  });
+  function saveScene(i) {
+    const old = project.scenes[i];
+    project.scenes[i] = { name: old ? old.name : `Scene ${i + 1}`, ...sceneSnap() };
+    ui.sceneActive = i;
+    save();
+    renderScenes();
+    announce(`${project.scenes[i].name} saved: the drawing of every layer${old ? ', replacing what it had' : ''}. Click it to come back to it.`);
+  }
+  function applyScene(sc) {
+    snapshot();
+    for (const l of project.layers) if (sc.layers[l.id]) l.strokes = JSON.parse(JSON.stringify(sc.layers[l.id])); // layers added later keep theirs
+    if (sc.drums) Object.assign(project.drums, JSON.parse(JSON.stringify(sc.drums)));
+    if (!selected()) { ui.sel = null; ui.extra = []; }
+  }
+  function sceneBoundary() {
+    const pos = engine.position();
+    if (!pos || perf.launch === 'now') return null;
+    const unit = perf.launch === 'loop' ? L() : beatSec() * 4;
+    return Math.ceil((pos.u + 0.02) / unit) * unit;
+  }
+  // A pad: launch its scene, or keep the drawing in it when it is empty.
+  function sceneButton(i) {
+    if (!project.scenes[i]) { saveScene(i); return; }
+    launchScene(i);
+  }
+  function launchScene(i) {
+    const sc = project.scenes[i];
+    if (!sc) return;
+    const done = () => {
+      applyScene(sc);
+      ui.sceneActive = i;
+      const pos = engine.position(), p = ui.scenePending; // the scheduler runs a little ahead: light the pad on the beat
+      if (p && p.i === i) setTimeout(() => { if (ui.scenePending === p) { ui.scenePending = null; renderScenes(); } }, pos ? Math.max(0, (p.u - pos.u) * 1000) : 0);
+      save();
+      renderLayers();
+      refreshDrums();
+      updateEmpty();
+      renderKnobStrip();
+      requestRender();
+    };
+    const at = sceneBoundary();
+    if (at == null) { ui.scenePending = null; done(); renderScenes(); announce(`${sc.name}`); return; }
+    ui.scenePending = { i, u: at };
+    engine.at(at, done);
+    renderScenes();
+    announce(`${sc.name} starts on the next ${perf.launch === 'loop' ? 'loop' : 'bar'}`);
+  }
+  function renderScenes() {
+    $('#scene-grid').innerHTML = project.scenes.map((sc, i) => {
+      const pending = ui.scenePending && ui.scenePending.i === i, active = !pending && ui.sceneActive === i && sc;
+      return `<div class="scene${sc ? '' : ' is-empty'}${active ? ' is-active' : ''}${pending ? ' is-pending' : ''}">
+        <button type="button" class="scene-pad" data-scene="${i}" data-learn="scene.${i}" aria-pressed="${!!active}"
+          aria-label="${sc ? `Launch ${esc(sc.name)}${pending ? ', starting soon' : ''}` : `Scene ${i + 1}, empty: save the drawing here`}">
+          <span class="scene-num">${i + 1}</span><span class="scene-name">${sc ? esc(sc.name) : 'Save here'}</span>${pending ? '<span class="scene-wait">next ' + (perf.launch === 'loop' ? 'loop' : 'bar') + '</span>' : ''}
+        </button>
+        ${sc ? `<div class="scene-tools"><button type="button" class="scene-tool" data-scene-save="${i}" title="Save the drawing over this scene" aria-label="Save the drawing over ${esc(sc.name)}">Save</button><button type="button" class="scene-tool" data-scene-del="${i}" aria-label="Clear ${esc(sc.name)}">×</button></div>` : ''}
+      </div>`;
+    }).join('');
+    renderKnobStrip();
+  }
+
+  // Perform settings: kept for this browser.
+  const PERF_KEY = 'sketchtone.perform.v1';
+  const perf = { launch: 'bar', pads: 'scenes', keys: 'fx', latch: false, inKey: true, ...readJSON(PERF_KEY, {}) };
+  function syncPerformControls() {
+    for (const [name, v] of [['pf-launch', perf.launch], ['pf-pads', perf.pads], ['pf-keys', perf.keys], ['pf-hold', perf.latch ? 'latch' : 'hold']]) {
+      document.querySelectorAll(`input[name="${name}"]`).forEach(r => { r.checked = r.value === v; });
+    }
+    $('#pf-inkey').checked = perf.inKey;
+    const notes = perf.keys === 'notes';
+    $('#keys-fx').hidden = notes;
+    $('#keys-notes').hidden = !notes;
+    $('#keys-notes-layer').textContent = current().name;
+    renderPiano();
+  }
+  function renderPerform() {
+    renderScenes();
+    renderMacros();
+    syncPerformControls();
+    renderKeyDetail();
+  }
+
+  // Keys in "Play notes" mode: the picked layer plays them, kept in the key unless you say no.
+  const noteVoices = new Map();
+  function playNoteOn(note, vel = 100) {
+    const l = current(), m = perf.inKey ? ST.snapMidi(note, project.scale) : note;
+    if (noteVoices.has(note)) engine.noteOff(noteVoices.get(note));
+    noteVoices.set(note, engine.noteOn(l, m, vel / 127));
+    if (!ui.held.includes(note)) ui.held.push(note);
+    renderPiano();
+    speak(`${noteName(m)} on ${l.name}`);
+  }
+  function playNoteOff(note) {
+    engine.noteOff(noteVoices.get(note));
+    noteVoices.delete(note);
+    ui.held = ui.held.filter(n => n !== note);
+    renderPiano();
+  }
+  function releaseNotes() { for (const n of [...noteVoices.keys()]) playNoteOff(n); }
+
+  // ---------- MIDI learn: any knob, slider or pad on screen ----------
+  let learning = null;
+  const learnLabel = path => (path.startsWith('scene.') ? `scene ${Number(path.split('.')[1]) + 1}` : path === 'transport.play' ? 'Play' : path === 'transport.stop' ? 'Stop' : ((controlDef(path) || {}).label || path));
+  function startLearn(el) {
+    const host = el.closest('[data-learn], [data-path]');
+    if (!host) return;
+    const path = host.dataset.learn || host.dataset.path;
+    if (!path.startsWith('scene.') && !path.startsWith('transport.')) {
+      const d = controlDef(path);
+      if (!d || d.discrete === undefined && d.min === undefined) { announce('This control cannot be learned'); return; }
+    }
+    cancelLearn();
+    if (!midi.status.connected) midi.connect();
+    learning = { path, el: host };
+    host.classList.add('is-learning');
+    midi.startLearn(finishLearn);
+    announce(`Turn a knob, or press a pad or key, on your controller to control ${learnLabel(path)}. Escape cancels.`);
+  }
+  function finishLearn(id, inLabel) {
+    if (!learning) return;
+    const path = learning.path, learned = midi.settings.learned;
+    for (const k in learned) if (learned[k] === path) delete learned[k];
+    learned[id] = path;
+    midi.save();
+    cancelLearn();
+    renderKnobStrip();
+    renderLearned();
+    showHud(inLabel, learnLabel(path), 'learned', null);
+    announce(`${inLabel} now controls ${learnLabel(path)}`);
+  }
+  function cancelLearn() {
+    if (!learning) return;
+    learning.el.classList.remove('is-learning');
+    learning = null;
+    midi.cancelLearn();
+  }
+  document.addEventListener('keydown', e => {
+    if ((e.key !== 'l' && e.key !== 'L') || e.metaKey || e.ctrlKey || e.altKey) return;
+    const t = e.target;
+    if (!(t.closest && (t.closest('.knob') || t.closest('[data-learn]') || (t.matches('input[type="range"]') && t.dataset.path)))) return;
+    e.preventDefault();
+    e.stopPropagation();
+    startLearn(t);
+  }, true);
+  document.addEventListener('pointerdown', e => {
+    if (!e.altKey || !e.target.closest) return;
+    const t = e.target.closest('.knob, [data-learn], input[type="range"][data-path]');
+    if (!t || t.closest('#drum-canvas')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    startLearn(t);
+  }, true);
+  midi.on('learned', (id, move) => {
+    const path = midi.settings.learned[id];
+    if (path.startsWith('scene.') || path.startsWith('transport.')) { if ((move.abs != null ? move.abs : move.delta) > 0.4) learnedPress(path); return; }
+    const d = controlDef(path);
+    if (d) turn(id, midi.learnedFor(path).label, d, move);
+  });
+  midi.on('learnedNote', (id, vel, on) => { if (on) learnedPress(midi.settings.learned[id]); });
+  function learnedPress(path) {
+    if (path.startsWith('scene.')) sceneButton(Number(path.split('.')[1]));
+    else if (path === 'transport.play') togglePlay();
+    else if (path === 'transport.stop') { stopAll(); announce('Stopped'); }
+  }
+  function renderLearned() {
+    const list = Object.entries(midi.settings.learned);
+    $('#md-pins').innerHTML = list.length
+      ? list.map(([id, path]) => `<li><b>${esc(midi.learnedFor(path) ? midi.learnedFor(path).label : id)}</b><span>${esc(learnLabel(path))}</span><button type="button" class="btn btn-small" data-unlearn="${esc(id)}">Forget</button></li>`).join('')
+      : '<li class="md-empty">Nothing learned yet.</li>';
+  }
 
   // ---------- drum strip ----------
   // A generative drummer. The red energy line (same time axis as the canvas) says
@@ -4022,8 +4590,9 @@
     ['Edit', [[`${MOD} Z`, 'Undo'], [`Shift ${MOD} Z`, 'Redo'], [`${MOD} C`, 'Copy the selected line'], [`${MOD} V`, 'Paste it on the picked layer'], [`${MOD} D`, 'Duplicate the selected line'], ['Alt arrows', 'Nudge the selected line (Shift: bigger steps)'],
       ['Delete', 'Remove the selected line'], ['Double-click', 'Change the words of a text']]],
     ['Layers', [['1 … 8', 'Pick a layer'], ['D', 'Pick the drum layer'], ['N', 'New layer'], ['M', 'Mute the picked layer'], ['Shift S', 'Solo the picked layer']]],
+    ['Perform', [['W', 'Perform tab: scenes, macros, keys'], ['Shift 1 … 8', 'Launch a scene (an empty one saves the drawing)'], ['L', 'Learn: link the focused knob, slider or scene to your controller'], ['Esc', 'Stop learning or mapping']]],
     ['Windows', [['?', 'These shortcuts'], [`${MOD} ,`, 'Settings'], [`${MOD} S`, 'Save a version'], [`${MOD} E`, 'Export'], ['K', 'MIDI setup']]],
-    ['Knobs', [['Arrows', 'Turn the focused knob (Shift: bigger steps)'], ['Home  End', 'Minimum or maximum'], ['L', 'Pin the focused knob to a controller knob']]],
+    ['Knobs', [['Arrows', 'Turn the focused knob (Shift: bigger steps)'], ['Home  End', 'Minimum or maximum'], ['L', 'Learn: link the focused knob to a controller knob']]],
   ];
   const keysDlg = $('#keys-dialog');
   $('#keys-body').innerHTML = SHORTCUTS.map(([group, rows]) => `
@@ -4099,7 +4668,8 @@
   document.addEventListener('keydown', e => {
     const t = e.target, typing = (t.tagName === 'INPUT' && (t.type === 'text' || t.type === 'number')) || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT';
     if (dlg.open || appDlg.open || keysDlg.open || patternDlg.open) return;
-    if (e.key === 'Escape' && learning) { cancelLearn(); announce('Pinning cancelled'); return; }
+    if (e.key === 'Escape' && learning) { cancelLearn(); announce('Learning cancelled'); return; }
+    if (e.key === 'Escape' && ui.macroMap != null) { setMacroMap(null); announce('Macro mapping cancelled'); return; }
     const mod = e.metaKey || e.ctrlKey, k = e.key.toLowerCase();
     const drawing = ui.pen || ui.draft || ui.spray;
     // letters work anywhere except while typing or on a focused knob (it uses its own keys)
@@ -4158,6 +4728,12 @@
       r.checked = true;
       r.dispatchEvent(new Event('change'));
       announce(['Quiet', 'Medium', 'Loud'][i]);
+    } else if (e.shiftKey && /^Digit[1-8]$/.test(e.code)) {
+      e.preventDefault();
+      sceneButton(Number(e.code.slice(5)) - 1);
+    } else if (k === 'w') {
+      setDockTab(ui.dock === 'perform' ? 'drums' : 'perform');
+      announce(ui.dock === 'perform' ? 'Perform: scenes, macros and keys' : 'Drums');
     } else if (/^[1-8]$/.test(e.key)) {
       const l = project.layers[Number(e.key) - 1];
       if (l) selectLayer(l.id); else announce(`There is no layer ${e.key}`);
@@ -4229,6 +4805,7 @@
     updateReadout(ui.startPos);
     refreshDrums();
     buildQuick();
+    if (ui.dock === 'perform') renderPerform();
     requestRender();
   }
 
@@ -4251,7 +4828,7 @@
 
   readTheme();
   applyPrefs();
-  setDockTab(['drums', 'sound', 'mix'].includes(dockPref.tab) ? dockPref.tab : 'drums');
+  setDockTab(['drums', 'sound', 'mix', 'perform'].includes(dockPref.tab) ? dockPref.tab : 'drums');
   if (dockPref.collapsed) setDockCollapsed(true);
   setMetronome(!!prefs.metronome);
   setSaveStatus('saved', hasMusic() ? 'Saved' : '');

@@ -3,7 +3,7 @@
 (function (ST) {
   'use strict';
 
-  const { FX_BY_ID, FX_CHAIN, DIVS, SCALES, loadWorklet, itemPoints, voices, drumHits, drumHit, playDrumHit, makeDrumBus, configureDrumBus } = ST;
+  const { FX_BY_ID, FX_CHAIN, DIVS, SCALES, loadWorklet, impulse, itemPoints, voices, drumHits, drumHit, playDrumHit, makeDrumBus, configureDrumBus } = ST;
 
   const LOW_MIDI = 48;  // C3 at the bottom of the canvas
   const HIGH_MIDI = 84; // C6 at the top
@@ -192,7 +192,49 @@
   const anySolo = p => p.layers.some(l => l.solo) || !!(p.drums && p.drums.solo);
   const audible = (layer, project) => !layer.muted && (!anySolo(project) || layer.solo);
   const drumsAudible = p => !p.drums.muted && (!anySolo(p) || p.drums.solo);
-  const drumChannel = d => ({ volume: 1, pan: d.pan || 0 }); // the drum bus already applies the drum volume
+  // The drum bus already applies the drum volume; this channel adds only what an LFO moves.
+  const drumChannel = (d, v = d) => ({ volume: d.volume ? v.volume / d.volume : 1, pan: v.pan || 0, send: v.send });
+
+  // ---------- LFO ----------
+  // One per layer (and the drums): moves one knob up and down, in time with the beat.
+  // The phase comes from the song position, so live play and export move the same way.
+  const LFO_DEFAULT = { on: false, target: 'fx.filter.cutoff', rate: 4, depth: 40, shape: 'sine' };
+  const LFO_RATES = [0.25, 0.5, 1, 2, 4, 8, 16, 32]; // beats per cycle
+  function lfoWave(shape, cycles) {
+    const ph = cycles - Math.floor(cycles);
+    if (shape === 'triangle') return 1 - 4 * Math.abs(ph - 0.5);
+    if (shape === 'square') return ph < 0.5 ? 1 : -1;
+    if (shape === 'saw') return 1 - 2 * ph; // falls: opens then closes
+    if (shape === 'random') return mulberry32(Math.floor(cycles) * 7919 + 13)() * 2 - 1; // a new step every cycle
+    return Math.sin(ph * Math.PI * 2);
+  }
+  // What an LFO target is, and the range it moves in.
+  function lfoRange(target) {
+    if (target === 'volume') return { min: 0, max: 1.2 };
+    if (target === 'pan') return { min: -1, max: 1 };
+    if (target === 'send.room' || target === 'send.echo') return { min: 0, max: 100 };
+    const [kind, id, key] = String(target).split('.');
+    const c = kind === 'fx' && FX_BY_ID[id] && FX_BY_ID[id].params.find(q => q.key === key && q.kind === 'knob');
+    return c ? { min: c.min, max: c.max } : null;
+  }
+  // The layer and FX as they sound at song time u: the stored values with the LFO applied.
+  function modView(layer, fx, u, bpm) {
+    const lfo = layer.lfo;
+    if (!lfo || !lfo.on || !lfo.depth) return { layer, fx };
+    const r = lfoRange(lfo.target);
+    if (!r) return { layer, fx };
+    const w = lfoWave(lfo.shape, u * bpm / 60 / Math.max(0.0625, lfo.rate)), span = (r.max - r.min) / 2 * lfo.depth / 100;
+    const bound = v => Math.min(r.max, Math.max(r.min, v));
+    if (lfo.target === 'volume') return { layer: { ...layer, volume: bound(layer.volume + w * span) }, fx };
+    if (lfo.target === 'pan') return { layer: { ...layer, pan: bound((layer.pan || 0) + w * span) }, fx };
+    if (lfo.target.startsWith('send.')) {
+      const k = lfo.target.slice(5), send = { room: 0, echo: 0, ...layer.send };
+      return { layer: { ...layer, send: { ...send, [k]: bound(send[k] + w * span) } }, fx };
+    }
+    const [, id, key] = lfo.target.split('.');
+    return { layer, fx: { ...fx, [id]: { ...fx[id], on: true, [key]: bound(fx[id][key] + w * span) } } };
+  }
+  const lfoActive = l => !!(l && l.lfo && l.lfo.on && l.lfo.depth > 0 && lfoRange(l.lfo.target));
 
   // ---------- graph ----------
   const noiseBufs = new WeakMap();
@@ -207,7 +249,13 @@
     return buf;
   }
 
+  // DJ filter on the master: below 0 closes a low-pass (darker), above 0 opens a high-pass (thinner).
+  const djFreqs = v => ({ lp: v < 0 ? 20000 * Math.pow(180 / 20000, -v / 100) : 20000, hp: v > 0 ? 20 * Math.pow(2500 / 20, v / 100) : 20 });
   function makeMaster(ctx) {
+    const lp = ctx.createBiquadFilter(), hp = ctx.createBiquadFilter();
+    lp.type = 'lowpass'; hp.type = 'highpass';
+    lp.frequency.value = 20000; hp.frequency.value = 20;
+    lp.Q.value = hp.Q.value = 1.1;
     const comp = ctx.createDynamicsCompressor();
     comp.threshold.value = -16;
     comp.knee.value = 10;
@@ -222,16 +270,62 @@
     limiter.release.value = 0.1;
     const out = ctx.createGain();
     out.gain.value = 0.9;
-    comp.connect(limiter).connect(out);
+    lp.connect(hp).connect(comp).connect(limiter).connect(out);
     out.connect(ctx.destination);
-    return { input: comp, output: out };
+    return { input: lp, output: out, lp, hp };
+  }
+  function setMasterFilter(master, ctx, v, now) {
+    const f = djFreqs(Math.max(-100, Math.min(100, v || 0)));
+    if (now) { master.lp.frequency.value = f.lp; master.hp.frequency.value = f.hp; return; }
+    master.lp.frequency.setTargetAtTime(f.lp, ctx.currentTime, 0.04);
+    master.hp.frequency.setTargetAtTime(f.hp, ctx.currentTime, 0.04);
+  }
+
+  // Shared sends: one Room and one Echo for the whole song. Every layer and the drums
+  // send some of their sound to them (after volume and pan), like on a mixing desk.
+  const MASTER_DEFAULT = { filter: 0, room: { level: 80, size: 3.5, tone: 55 }, echo: { level: 70, sync: '3/16', feedback: 45 } };
+  function makeReturns(ctx, dest) {
+    const room = { input: ctx.createGain(), conv: ctx.createConvolver(), damp: ctx.createBiquadFilter(), out: ctx.createGain(), size: null };
+    room.damp.type = 'lowpass';
+    room.input.connect(room.conv).connect(room.damp).connect(room.out).connect(dest);
+    // ping-pong echo: left, then right, then left again, a little darker each time
+    const echo = { input: ctx.createGain(), tone: ctx.createBiquadFilter(), dL: ctx.createDelay(2), dR: ctx.createDelay(2), lr: ctx.createGain(), rl: ctx.createGain(), merge: ctx.createChannelMerger(2), out: ctx.createGain() };
+    echo.tone.type = 'lowpass';
+    echo.tone.frequency.value = 4200;
+    echo.input.connect(echo.tone).connect(echo.dL);
+    echo.dL.connect(echo.lr).connect(echo.dR);
+    echo.dR.connect(echo.rl).connect(echo.dL);
+    echo.dL.connect(echo.merge, 0, 0);
+    echo.dR.connect(echo.merge, 0, 1);
+    echo.merge.connect(echo.out).connect(dest);
+    return { room, echo };
+  }
+  function configureReturns(r, ctx, m, bpm, now) {
+    const set = (param, v) => (now ? (param.value = v) : param.setTargetAtTime(v, ctx.currentTime, 0.04));
+    const size = Math.round((m.room.size || 3) * 10) / 10;
+    if (size !== r.room.size) { r.room.conv.buffer = impulse(ctx, size); r.room.size = size; }
+    set(r.room.damp.frequency, 1200 * Math.pow(16000 / 1200, (m.room.tone ?? 55) / 100));
+    set(r.room.out.gain, (m.room.level ?? 80) / 100 * 0.9);
+    const t = Math.min(2, 60 / bpm * (DIVS[m.echo.sync] || 0.75)), fb = Math.sqrt(Math.min(0.92, (m.echo.feedback ?? 45) / 100));
+    set(r.echo.dL.delayTime, t);
+    set(r.echo.dR.delayTime, t);
+    set(r.echo.lr.gain, fb);
+    set(r.echo.rl.gain, fb);
+    set(r.echo.out.gain, (m.echo.level ?? 70) / 100 * 0.8);
   }
 
   // A channel: input -> effects -> volume -> pan -> destination.
-  function makeBus(ctx, dest) {
+  function makeBus(ctx, dest, returns) {
     const bus = { input: ctx.createGain(), out: ctx.createGain(), pan: ctx.createStereoPanner ? ctx.createStereoPanner() : null, chain: [], inst: {}, sig: null };
     bus.input.connect(bus.out);
     if (bus.pan) bus.out.connect(bus.pan).connect(dest); else bus.out.connect(dest);
+    if (returns) { // post-fader sends to the shared Room and Echo
+      bus.sends = { room: ctx.createGain(), echo: ctx.createGain() };
+      bus.sends.room.gain.value = bus.sends.echo.gain.value = 0;
+      const from = bus.pan || bus.out;
+      from.connect(bus.sends.room).connect(returns.room.input);
+      from.connect(bus.sends.echo).connect(returns.echo.input);
+    }
     return bus;
   }
 
@@ -264,6 +358,13 @@
     const v = isAudible ? layer.volume : 0, pan = Math.max(-1, Math.min(1, layer.pan || 0));
     if (now) { bus.out.gain.value = v; if (bus.pan) bus.pan.pan.value = pan; }
     else { bus.out.gain.setTargetAtTime(v, ctx.currentTime, 0.03); if (bus.pan) bus.pan.pan.setTargetAtTime(pan, ctx.currentTime, 0.03); }
+    if (bus.sends) {
+      const send = layer.send || {};
+      for (const k of ['room', 'echo']) {
+        const g = Math.max(0, Math.min(100, send[k] || 0)) / 100;
+        if (now) bus.sends[k].gain.value = g; else bus.sends[k].gain.setTargetAtTime(g, ctx.currentTime, 0.03);
+      }
+    }
   }
 
   const bendSources = new WeakMap(); // ctx -> ConstantSourceNode (cents), realtime only
@@ -636,7 +737,9 @@
         bend.offset.value = 0;
         bend.start();
         bendSources.set(this.ctx, bend);
-        this.drumFx = makeBus(this.ctx, this.master.input); // drum layer FX, like a canvas layer
+        this.returns = makeReturns(this.ctx, this.master.input);
+        this.updateMaster(true);
+        this.drumFx = makeBus(this.ctx, this.master.input, this.returns); // drum layer FX, like a canvas layer
         this.drumBus = makeDrumBus(this.ctx, this.drumFx.input);
         this.updateDrums(true);
         loadWorklet(this.ctx).then(ok => { this.worklet = ok; if (ok) this.updateAll(); });
@@ -647,6 +750,34 @@
 
     invalidate() { this.notesCache.clear(); this.drumCache = new Map(); this.resyncSoon(); }
 
+    // Master DJ filter and the shared Room / Echo returns.
+    updateMaster(now = false) {
+      if (!this.ctx) return;
+      const p = this.getProject(), m = p.master || MASTER_DEFAULT;
+      setMasterFilter(this.master, this.ctx, m.filter, now);
+      configureReturns(this.returns, this.ctx, m, p.bpm, now);
+    }
+
+    // A layer as it sounds right now: its own settings, or a held key's FX, plus its LFO.
+    view(layer, fx = this.fxOf(layer)) {
+      const pos = this.state && lfoActive(layer) ? this.position() : null;
+      return pos ? modView(layer, fx, pos.u, this.getProject().bpm) : { layer, fx };
+    }
+
+    // Run fn at song time u, in step with the scheduler: scenes launch exactly on the bar.
+    at(u, fn) { this.queued = { u, fn }; }
+    cancelQueued() { this.queued = null; }
+
+    // Keys in "Play notes" mode: a note that sounds while the key is held.
+    noteOn(layer, midi, vel = 0.8) {
+      const ctx = this.ensure(), t = ctx.currentTime + 0.005;
+      const v = createVoice(ctx, this.bus(layer).input, layer.sound, t, 0.2 + 0.45 * vel, this.voices, this.fxOf(layer).vibrato);
+      v.setFreq(midiToFreq(midi), t, 'set');
+      v.hold();
+      return v;
+    }
+    noteOff(v) { if (v && this.ctx) v.release(this.ctx.currentTime + 0.005); }
+
     resyncSoon() {
       if (!this.state || this.resyncTimer) return;
       this.resyncTimer = setTimeout(() => { this.resyncTimer = 0; this.resync(); }, 30);
@@ -654,10 +785,11 @@
 
     // Edits while playing: notes that are sounding follow the new drawing, notes
     // that should be sounding now start mid-way, notes whose line is gone fade out.
-    resync() {
+    // at: an AudioContext time to reconcile at (a scene launch), default just after now.
+    resync(at) {
       const s = this.state;
       if (!s) return;
-      const ctx = this.ctx, p = this.getProject(), L = loopLength(p), now = ctx.currentTime + 0.01;
+      const ctx = this.ctx, p = this.getProject(), L = loopLength(p), now = at != null ? at : ctx.currentTime + 0.01;
       const ctxAt = u => s.t0 + u - s.offset;
       const live = new Map();
       for (const v of this.voices) if (v.meta && v.endAt > now) live.set(v.meta.key, v);
@@ -682,7 +814,7 @@
       }
       for (const v of live.values()) { // their line moved away or was erased
         if (v.meta.bend) continue;
-        if (v.tOn > now) v.kill(now); else v.release(now);
+        if (v.tOn > now - 1e-4) v.kill(Math.max(v.tOn, now)); else v.release(now);
       }
     }
 
@@ -702,9 +834,9 @@
 
     updateDrums(now = false) {
       if (!this.ctx) return;
-      const p = this.getProject(), d = p.drums;
+      const p = this.getProject(), d = p.drums, v = this.view(d);
       configureDrumBus(this.drumBus, this.ctx, d, now, drumsAudible(p));
-      configureBus(this.drumFx, this.ctx, drumChannel(d), this.env(), true, now, this.fxOf(d));
+      configureBus(this.drumFx, this.ctx, drumChannel(d, v.layer), this.env(), true, now, v.fx);
     }
 
     // One drum hit right now, with the drum layer's sound and FX (editing hits).
@@ -730,8 +862,9 @@
     bus(layer) {
       let b = this.buses.get(layer.id);
       if (!b) {
-        b = makeBus(this.ctx, this.master.input);
-        configureBus(b, this.ctx, layer, this.env(), audible(layer, this.getProject()), true, this.fxOf(layer));
+        b = makeBus(this.ctx, this.master.input, this.returns);
+        const v = this.view(layer);
+        configureBus(b, this.ctx, v.layer, this.env(), audible(layer, this.getProject()), true, v.fx);
         this.buses.set(layer.id, b);
       }
       return b;
@@ -740,7 +873,9 @@
     updateLayer(layer) {
       if (layer === this.getProject().drums) { this.updateDrums(); return; }
       const b = this.buses.get(layer.id);
-      if (b) configureBus(b, this.ctx, layer, this.env(), audible(layer, this.getProject()), false, this.fxOf(layer));
+      if (!b) return;
+      const v = this.view(layer);
+      configureBus(b, this.ctx, v.layer, this.env(), audible(layer, this.getProject()), false, v.fx);
     }
 
     updateAll() {
@@ -751,6 +886,14 @@
       }
       for (const l of layers) this.updateLayer(l);
       this.updateDrums();
+      this.updateMaster();
+    }
+
+    // LFOs: move their knob a little every scheduler tick, from the song position.
+    modulate() {
+      const p = this.getProject();
+      for (const l of p.layers) if (lfoActive(l)) this.updateLayer(l);
+      if (lfoActive(p.drums)) this.updateDrums();
     }
 
     // from: song time in seconds (may be past the first loop pass when resuming)
@@ -778,12 +921,29 @@
     tick() {
       const s = this.state;
       if (!s) return;
-      const ctx = this.ctx, project = this.getProject(), L = loopLength(project);
-      const horizon = ctx.currentTime + LOOKAHEAD;
+      this.modulate();
+      const horizon = this.ctx.currentTime + LOOKAHEAD;
       if (horizon <= s.until) return;
       const u0 = s.offset + (s.until - s.t0), u1 = s.offset + (horizon - s.t0);
-      s.until = horizon;
       const ctxAt = u => s.t0 + u - s.offset;
+      const q = this.queued;
+      if (q && q.u < u1) { // a scene change inside this window: old notes up to it, new ones after
+        this.queued = null;
+        const at = Math.max(u0, q.u);
+        this.scheduleRange(u0, at, ctxAt);
+        s.until = ctxAt(at);
+        q.fn();
+        this.notesCache.clear();
+        this.drumCache = new Map();
+        this.resync(s.until); // old notes end at the boundary, long new ones join part-way
+        this.scheduleRange(at, u1, ctxAt);
+      } else this.scheduleRange(u0, u1, ctxAt);
+      s.until = horizon;
+    }
+
+    scheduleRange(u0, u1, ctxAt) {
+      if (u1 <= u0) return;
+      const ctx = this.ctx, project = this.getProject(), L = loopLength(project);
       const kMax = project.loop ? Math.floor(u1 / L) : 0;
       for (let k = Math.floor(u0 / L); k <= kMax; k++) {
         for (const layer of project.layers) {
@@ -800,8 +960,11 @@
     // letRing: stop scheduling but let already-sounding tails fade naturally.
     stop(letRing) {
       clearInterval(this.timer);
+      const wasModulating = !!this.state;
       this.state = null;
+      this.queued = null;
       if (!this.ctx) return;
+      if (wasModulating) this.updateAll(); // LFOs back to the stored values
       const t = this.ctx.currentTime;
       for (const b of [...this.buses.values(), this.drumFx]) {
         for (const id of ['trancegate', 'tapestop']) {
@@ -926,9 +1089,13 @@
     const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
     const ctx = new OAC(2, Math.ceil(sr * total), sr);
     const env = { bpm: project.bpm, worklet: await loadWorklet(ctx) };
-    const master = makeMaster(ctx);
+    const master = makeMaster(ctx), mset = project.master || MASTER_DEFAULT;
+    setMasterFilter(master, ctx, mset.filter, true);
+    const returns = makeReturns(ctx, master.input);
+    configureReturns(returns, ctx, mset, project.bpm, true);
     const layers = project.layers.filter(l => audible(l, project) && l.strokes.length);
-    const buses = new Map(layers.map(l => { const bus = makeBus(ctx, master.input); configureBus(bus, ctx, l, env, true, true); return [l.id, bus]; }));
+    const view = (l, u) => (lfoActive(l) ? modView(l, l.fx, u, project.bpm) : { layer: l, fx: l.fx });
+    const buses = new Map(layers.map(l => { const bus = makeBus(ctx, master.input, returns), v = view(l, 0); configureBus(bus, ctx, v.layer, env, true, true, v.fx); return [l.id, bus]; }));
     const noteCache = new Map();
     const notesOf = (layer, k) => {
       const key = `${layer.id}:${layer.read.mode === 'pingpong' ? k % 2 : 0}`;
@@ -938,9 +1105,10 @@
     const d = project.drums;
     let drumBus = null, drumFx = null;
     if (d && drumsAudible(project)) {
-      drumFx = makeBus(ctx, master.input);
+      drumFx = makeBus(ctx, master.input, returns);
       drumBus = makeDrumBus(ctx, drumFx.input);
-      configureBus(drumFx, ctx, drumChannel(d), env, true, true, d.fx);
+      const v = view(d, 0);
+      configureBus(drumFx, ctx, drumChannel(d, v.layer), env, true, true, v.fx);
       configureDrumBus(drumBus, ctx, d, true);
     }
     const scheduleWindow = (u0, u1) => {
@@ -955,13 +1123,26 @@
         }
       }
     };
-    const WIN = 4;
+    // LFOs move at small steps while rendering (a few dozen per cycle).
+    const moving = [...layers, ...(drumFx && lfoActive(d) ? [d] : [])].filter(lfoActive);
+    const lfoStep = moving.length ? Math.min(0.25, Math.max(0.03, Math.min(...moving.map(l => l.lfo.rate)) * 60 / project.bpm / 32)) : 0;
+    const modulate = u => {
+      for (const l of moving) {
+        const v = view(l, u);
+        if (l === d) configureBus(drumFx, ctx, drumChannel(d, v.layer), env, true, false, v.fx);
+        else configureBus(buses.get(l.id), ctx, v.layer, env, true, false, v.fx);
+      }
+    };
+    const WIN = 4, stops = new Map(); // render quantum -> what to do there
+    const quantum = t => Math.round(t * sr / 128);
     scheduleWindow(0, WIN);
-    for (let t = WIN; t < seconds; t += WIN) {
-      const at = Math.round((t - 1) * sr / 128) * 128 / sr; // suspend a little early, on a render quantum
-      ctx.suspend(at).then(() => {
-        scheduleWindow(t, t + WIN);
-        if (opts.onProgress) opts.onProgress(Math.min(1, t / total));
+    for (let t = WIN; t < seconds; t += WIN) stops.set(quantum(t - 1), { win: t }); // schedule a little early
+    const lastQ = Math.floor(ctx.length / 128) - 1; // a suspend must fall inside the render
+    if (lfoStep) for (let t = lfoStep; t < total; t += lfoStep) { const q = quantum(t); if (q > 0 && q <= lastQ) stops.set(q, { ...stops.get(q), mod: true }); }
+    for (const [q, job] of stops) {
+      ctx.suspend(q * 128 / sr).then(() => {
+        if (job.win) { scheduleWindow(job.win, job.win + WIN); if (opts.onProgress) opts.onProgress(Math.min(1, job.win / total)); }
+        if (job.mod) modulate(q * 128 / sr);
         ctx.resume();
       });
     }
@@ -1063,7 +1244,7 @@
   }
 
   Object.assign(ST, {
-    Engine, REGISTER, pitchLines, yToMidi, noteName, strokeSpan, renderWav, renderStems, buildMidi, setRootKey, KEY_NAMES: NAMES,
+    Engine, REGISTER, pitchLines, LFO_DEFAULT, LFO_RATES, MASTER_DEFAULT, lfoRange, snapMidi: (m, scale) => (SCALE_STEPS[scale] ? snapTo(m - rootKey, SCALE_STEPS[scale]) + rootKey : Math.round(m)), yToMidi, noteName, strokeSpan, renderWav, renderStems, buildMidi, setRootKey, KEY_NAMES: NAMES,
     loopLength, readPos, readPlan, sliceOrder, collectNotes, audible,
   });
 })(window.ST = window.ST || {});

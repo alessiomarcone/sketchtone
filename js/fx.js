@@ -578,5 +578,5 @@ registerProcessor('st-gate', Gate);`;
     return out;
   }
 
-  Object.assign(ST, { FX, FX_BY_ID, FX_GROUPS, FX_CHAIN, DIVS, defaultFx, loadWorklet });
+  Object.assign(ST, { FX, FX_BY_ID, FX_GROUPS, FX_CHAIN, DIVS, defaultFx, loadWorklet, impulse });
 })(window.ST = window.ST || {});
