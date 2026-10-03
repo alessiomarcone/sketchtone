@@ -79,6 +79,8 @@
     p.master = { filter: 0, ...p.master, room: { ...md.room, ...(p.master || {}).room }, echo: { ...md.echo, ...(p.master || {}).echo } };
     p.drums.send = { room: 0, echo: 0, ...p.drums.send };
     p.drums.lfo = { ...ST.LFO_DEFAULT, target: 'fx.filter.cutoff', ...p.drums.lfo };
+    p.drums.motions = Array.isArray(p.drums.motions) ? p.drums.motions : [];
+    p.master.motions = Array.isArray(p.master.motions) ? p.master.motions : [];
     p.scenes = Array.from({ length: SCENES }, (_, i) => (p.scenes && p.scenes[i]) || null);
     if (!Array.isArray(p.macros) || p.macros.length !== MACROS) p.macros = defaultMacros(p);
     const fxBase = defaultFx();
@@ -91,6 +93,7 @@
       l.hidden = !!l.hidden;
       l.send = { room: 0, echo: 0, ...l.send };
       l.lfo = { ...ST.LFO_DEFAULT, ...l.lfo };
+      l.motions = Array.isArray(l.motions) ? l.motions : [];
       l.strokes.forEach(it => { if (!it.id) it.id = uid(); });
     });
     return p;
@@ -1846,7 +1849,8 @@
     const s = l.sound;
     if (id === 'lfo') {
       const f = { ...ST.LFO_DEFAULT, ...l.lfo };
-      return f.on ? esc(`${lfoTargetLabel(f.target)} · ${rateLabel(f.rate)} · ${(LFO_SHAPES.find(x => x[0] === f.shape) || ['', ''])[1].toLowerCase()}`) : 'Off';
+      const more = (l.motions || []).filter(m => m.on).length;
+      return esc(`${f.on ? `${lfoTargetLabel(f.target)} · ${rateLabel(f.rate)} · ${(LFO_SHAPES.find(x => x[0] === f.shape) || ['', ''])[1].toLowerCase()}` : 'Off'}${more ? ` · +${more} moving` : ''}`);
     }
     if (id === 'voice') {
       if (isDrums(l)) return 'Only for words on canvas layers';
@@ -2262,8 +2266,18 @@
     }
     const note = document.createElement('p');
     note.className = 'fx-note';
-    note.textContent = 'It moves while the loop plays, around the value the knob is set to. Export includes it.';
+    note.textContent = 'It moves while the loop plays, around the value the knob is set to. Export includes it. Tip: right-click any knob to make it move too.';
     row.after(note);
+    const more = (l.motions || []).filter(m => m.on);
+    if (more.length) {
+      const box = document.createElement('div');
+      box.className = 'field lfo-more';
+      box.innerHTML = `<span class="field-label" id="lfo-more-label">Also moving</span><div class="chips" role="group" aria-labelledby="lfo-more-label">${more.map(m => {
+        const pr = motionPresetOf(m), name = `${motionTargetLabel(m.target, l)} · ${pr ? pr.label : 'custom'} ${rateLabel(m.rate)}`;
+        return `<span class="my-chip"><span class="chip" aria-pressed="true">${esc(name)}</span><button type="button" class="my-del" data-motion-stop="${esc(m.target)}" aria-label="Stop ${esc(name)}" title="Stop moving">×</button></span>`;
+      }).join('')}</div>`;
+      note.after(box);
+    }
     renderKnobStrip();
   }
 
@@ -2301,6 +2315,8 @@
     const voxChip = e.target.closest('[data-vox]');
     const myBox = e.target.closest('[data-my-key]');
     if (e.target.closest('#lfo-switch')) { toggleLfo(); return; }
+    const mstop = e.target.closest('[data-motion-stop]');
+    if (mstop) { stopMotion({ owner: target(), target: mstop.dataset.motionStop }); return; }
     const shape = e.target.closest('[data-lfo-shape]');
     if (shape) { setLfo('shape', shape.dataset.lfoShape); announce(`LFO shape: ${shape.textContent}`); return; }
     if (myBox) {
@@ -2647,6 +2663,7 @@
   function updateTransport() {
     updateDrumState();
     const state = engine.playing ? 'playing' : ui.pausedAt != null ? 'paused' : 'stopped';
+    if (state !== 'playing') clearMotionDots();
     playBtn.classList.toggle('is-playing', state === 'playing');
     playBtn.innerHTML = `${state === 'playing' ? ICON.pause : ICON.play}<span>${state === 'playing' ? 'Pause' : state === 'paused' ? 'Resume' : 'Play'}</span>`;
     const mini = $('#mini-play'); // the phone bar mirrors the transport
@@ -2664,6 +2681,7 @@
     const p = engine.position();
     if (p.done) { finishPlayback(); return; }
     if (ui.scenePending && p.u >= ui.scenePending.u - 0.005) { ui.scenePending = null; renderScenes(); }
+    if (movingEls.length) animateMotions(p.u);
     render();
     renderTimeline();
     renderDrums();
@@ -3302,6 +3320,7 @@
       if (el.tagName === 'INPUT') (el.closest('label') || el.parentElement).append(b);
       else (el.querySelector(':scope > .knob-label, :scope > legend, :scope > .scene-num') || el).append(b);
     };
+    markMotions();
     if (!on) return;
     targets.forEach((path, k) => {
       if (!path) return;
@@ -4004,6 +4023,204 @@
       : '<li class="md-empty">Nothing learned yet.</li>';
   }
 
+  // ---------- knob menu: right-click any knob or slider ----------
+  // Make it move by itself (motion presets, in time with the beat) or link it to a MIDI controller.
+  const MOTION_PRESETS = [
+    { id: 'slow', label: 'Slow wave', shape: 'sine', rate: 16, depth: 40 },
+    { id: 'breathe', label: 'Breathing', shape: 'triangle', rate: 8, depth: 30 },
+    { id: 'sweep', label: 'Sweep', shape: 'saw', rate: 4, depth: 50 },
+    { id: 'pulse', label: 'Pulse', shape: 'square', rate: 1, depth: 50 },
+    { id: 'wobble', label: 'Wobble', shape: 'sine', rate: 0.5, depth: 35 },
+    { id: 'stutter', label: 'Stutter', shape: 'square', rate: 0.25, depth: 60 },
+    { id: 'random', label: 'Random steps', shape: 'random', rate: 1, depth: 40 },
+  ];
+  // Where a control's motion lives: a layer (or the drums) and its target, or the master.
+  function motionSlot(path) {
+    const p = path.split('.'), layerSlot = (o, tg) => (o && ST.lfoRange(tg, isDrums(o)) ? { owner: o, target: tg } : { reason: 'This knob cannot move by itself.' });
+    if (p[0] === 'fx' || p[0] === 'sound') return layerSlot(target(), path);
+    if (p[0] === 'volume') return layerSlot(current(), 'volume');
+    if (p[0] === 'mix') return layerSlot(ownerOf(p[1]), p[2] === 'room' || p[2] === 'echo' ? `send.${p[2]}` : p[2]);
+    if (path === 'drum.volume') return layerSlot(project.drums, 'volume');
+    if (p[0] === 'master') return ST.MASTER_RANGES[p[1]] ? { owner: project.master, master: true, target: p[1] } : { reason: 'Room size cannot move by itself: it would click.' };
+    if (p[0] === 'drum') return { reason: 'Drum generator knobs write the groove: they cannot move by themselves yet. Link them to MIDI to play them live.' };
+    if (p[0] === 'draw') return { reason: 'Line knobs reshape the drawing. Link them to MIDI to play them live.' };
+    if (p[0] === 'macro') return { reason: 'Macros cannot move by themselves yet. Link one to MIDI to play it live.' };
+    if (p[0] === 'vox') return { reason: 'Voice knobs apply to whole words: they cannot move by themselves.' };
+    return { reason: 'This knob cannot move by itself.' };
+  }
+  function findMotion(slot) {
+    if (!slot || !slot.owner) return null;
+    if (slot.master) return (slot.owner.motions || []).find(m => m.target === slot.target && m.on) || null;
+    const o = slot.owner;
+    if (o.lfo && o.lfo.on && o.lfo.target === slot.target) return o.lfo; // the Motion card's own LFO
+    return (o.motions || []).find(m => m.target === slot.target && m.on) || null;
+  }
+  function motionChanged(slot) {
+    if (slot.master) engine.updateMaster(); else engine.updateLayer(slot.owner);
+    save();
+    markMotions();
+    updateCards();
+    if (ui.panel === 'lfo') buildPanel();
+  }
+  function applyMotion(slot, preset) {
+    const o = slot.owner, m = findMotion(slot), v = { shape: preset.shape, rate: preset.rate, depth: m ? m.depth : preset.depth, on: true };
+    if (m) Object.assign(m, v);
+    else { o.motions = [...(o.motions || []).filter(x => x.target !== slot.target), { target: slot.target, ...v }].slice(-12); }
+    if (!slot.master && slot.target.startsWith('fx.')) { // the effect must be on to be heard
+      const id = slot.target.split('.')[1];
+      if (!o.fx[id].on) { o.fx[id].on = true; if (o === target()) refreshFxState(id); }
+    }
+    motionChanged(slot);
+    announce(`${motionLabel(slot)} now moves by itself: ${preset.label}, ${rateLabel(preset.rate)}. It moves while the loop plays.`);
+  }
+  function stopMotion(slot) {
+    const m = findMotion(slot);
+    if (!m) return;
+    if (!slot.master && m === slot.owner.lfo) slot.owner.lfo.on = false;
+    else slot.owner.motions = slot.owner.motions.filter(x => x !== m);
+    motionChanged(slot);
+    announce(`${motionLabel(slot)} stays still again`);
+  }
+  function motionTargetLabel(t, owner) {
+    if (t.startsWith('sound.')) {
+      const k = isDrums(owner) ? [...ST.DRUM_PANELS.source, ...ST.DRUM_PANELS.envelope].find(x => x.key === t.slice(6)) : SOUND_KNOBS[t.slice(6)];
+      return k ? k.label : t;
+    }
+    return lfoTargetLabel(t);
+  }
+  const masterLabels = { filter: 'Master filter', roomlevel: 'Room level', echolevel: 'Echo level', feedback: 'Echo repeats' };
+  const motionLabel = slot => (slot.master ? masterLabels[slot.target] : `${ownerName(slot.owner)} ${motionTargetLabel(slot.target, slot.owner).toLowerCase()}`);
+  const motionPresetOf = m => MOTION_PRESETS.find(p => p.shape === m.shape && p.rate === m.rate);
+  // The stored value a motion moves around, in the knob's own units.
+  function motionBase(slot) {
+    const o = slot.owner, t = slot.target;
+    if (slot.master) return { filter: o.filter, roomlevel: o.room.level, echolevel: o.echo.level, feedback: o.echo.feedback }[t];
+    if (t === 'volume') return o.volume;
+    if (t === 'pan') return o.pan || 0;
+    if (t.startsWith('send.')) return (o.send || {})[t.slice(5)] || 0;
+    if (t.startsWith('sound.')) return o.sound[t.slice(6)];
+    const [, id, key] = t.split('.');
+    return o.fx[id][key];
+  }
+
+  // Knobs that move get a mark, and a dot that follows the movement while playing.
+  let movingEls = [];
+  function markMotions() {
+    movingEls = [];
+    for (const el of document.querySelectorAll('.knob-ctl[data-path], input[type="range"][data-path]')) {
+      if (el.closest('dialog')) continue;
+      const slot = motionSlot(el.dataset.path), m = slot.owner && findMotion(slot);
+      el.classList.toggle('is-moving', !!m);
+      if (m) movingEls.push({ el, slot, m });
+      else if (el._knob) el._knob.setMod(null);
+    }
+  }
+  function animateMotions(u) {
+    for (const { el, slot, m } of movingEls) {
+      if (!el._knob) continue;
+      const r = slot.master ? ST.MASTER_RANGES[slot.target] : ST.lfoRange(slot.target, isDrums(slot.owner));
+      if (r) el._knob.setMod(ST.motionValue(m, motionBase(slot), r, u, project.bpm));
+    }
+  }
+  const clearMotionDots = () => { for (const { el } of movingEls) if (el._knob) el._knob.setMod(null); };
+
+  const ctxMenu = $('#ctx-menu');
+  let ctxFor = null;
+  function openCtxMenu(host, x, y) {
+    const path = host.dataset.path || host.dataset.learn, button = !host.dataset.path;
+    const slot = button ? null : motionSlot(path), m = slot && findMotion(slot), link = midi.learnedFor(path);
+    const who = slot && slot.owner ? (slot.master ? 'Master' : ownerName(slot.owner)) : '';
+    ctxFor = { host, path, slot };
+    let html = `<div class="ctx-head"><b>${esc(slot && slot.owner ? motionTargetLabelFor(slot) : learnLabel(path))}</b>${who ? `<span>${esc(who)}</span>` : ''}</div>`;
+    if (slot) {
+      html += '<div class="ctx-sec" id="ctx-move-label">Move by itself</div>';
+      if (slot.owner) {
+        html += `<div role="group" aria-labelledby="ctx-move-label">${MOTION_PRESETS.map(p => `
+          <button type="button" role="menuitemradio" class="ctx-item" data-ctx-preset="${p.id}" aria-checked="${!!(m && motionPresetOf(m) === p)}">
+            <span class="ctx-check" aria-hidden="true"></span>${p.label}<span class="ctx-meta">${rateLabel(p.rate)}</span></button>`).join('')}</div>`;
+        if (m) {
+          html += `<label class="ctx-depth"><span>Depth</span><input type="range" min="5" max="100" step="1" value="${Math.round(m.depth)}" data-ctx="depth" aria-label="How far it moves"><output>${Math.round(m.depth)}%</output></label>
+            <button type="button" role="menuitem" class="ctx-item" data-ctx="stop"><span class="ctx-check" aria-hidden="true"></span>Stop moving</button>`;
+        }
+      } else html += `<p class="ctx-note">${esc(slot.reason)}</p>`;
+      html += '<div class="ctx-sep" role="separator"></div>';
+    }
+    html += '<div class="ctx-sec">MIDI controller</div>';
+    if (!midi.status.supported) html += '<p class="ctx-note">MIDI needs Chrome or Edge.</p>';
+    else {
+      if (link) html += `<p class="ctx-note">Linked to <b>${esc(link.label)}</b></p>`;
+      html += `<button type="button" role="menuitem" class="ctx-item" data-ctx="learn"><span class="ctx-check" aria-hidden="true"></span>${link ? 'Link to another control…' : 'Link to MIDI…'}<span class="ctx-meta">L</span></button>`;
+      if (link) html += '<button type="button" role="menuitem" class="ctx-item" data-ctx="unlink"><span class="ctx-check" aria-hidden="true"></span>Unlink</button>';
+    }
+    ctxMenu.innerHTML = html;
+    ctxMenu.hidden = false;
+    const w = ctxMenu.offsetWidth, h = ctxMenu.offsetHeight;
+    ctxMenu.style.left = `${Math.max(8, Math.min(x, innerWidth - w - 8))}px`;
+    ctxMenu.style.top = `${y + h > innerHeight - 8 ? Math.max(8, y - h) : y}px`;
+    const first = ctxMenu.querySelector('[aria-checked="true"]') || ctxMenu.querySelector('.ctx-item');
+    if (first) first.focus();
+  }
+  const motionTargetLabelFor = slot => (slot.master ? masterLabels[slot.target] : motionTargetLabel(slot.target, slot.owner));
+  function closeCtxMenu(refocus) {
+    if (ctxMenu.hidden) return;
+    ctxMenu.hidden = true;
+    const f = ctxFor;
+    ctxFor = null;
+    if (refocus && f) { const k = f.host.querySelector('.knob') || f.host; if (k.focus) k.focus(); }
+  }
+  ctxMenu.addEventListener('click', e => {
+    if (!ctxFor) return;
+    const pr = e.target.closest('[data-ctx-preset]'), act = e.target.closest('[data-ctx]');
+    const { slot, host, path } = ctxFor;
+    if (pr) { applyMotion(slot, MOTION_PRESETS.find(p => p.id === pr.dataset.ctxPreset)); closeCtxMenu(true); return; }
+    if (!act || act.dataset.ctx === 'depth') return;
+    if (act.dataset.ctx === 'stop') { stopMotion(slot); closeCtxMenu(true); }
+    else if (act.dataset.ctx === 'learn') { closeCtxMenu(true); startLearn(host.querySelector('.knob') || host); }
+    else if (act.dataset.ctx === 'unlink') {
+      for (const k in midi.settings.learned) if (midi.settings.learned[k] === path) delete midi.settings.learned[k];
+      midi.save();
+      renderKnobStrip();
+      renderLearned();
+      closeCtxMenu(true);
+      announce(`${learnLabel(path)} is no longer linked to MIDI`);
+    }
+  });
+  ctxMenu.addEventListener('input', e => {
+    if (e.target.dataset.ctx !== 'depth' || !ctxFor) return;
+    const m = findMotion(ctxFor.slot);
+    if (!m) return;
+    m.depth = Number(e.target.value);
+    e.target.nextElementSibling.textContent = `${m.depth}%`;
+    motionChanged(ctxFor.slot);
+  });
+  ctxMenu.addEventListener('keydown', e => {
+    const items = [...ctxMenu.querySelectorAll('.ctx-item, input')], i = items.indexOf(document.activeElement);
+    if (e.key === 'Escape' || e.key === 'Tab') { e.preventDefault(); e.stopPropagation(); closeCtxMenu(true); return; }
+    if (document.activeElement.tagName === 'INPUT' && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) return;
+    const n = { ArrowDown: i + 1, ArrowUp: i - 1, Home: 0, End: items.length - 1 }[e.key];
+    if (n === undefined) return;
+    e.preventDefault();
+    items[(n + items.length) % items.length].focus();
+  });
+  document.addEventListener('pointerdown', e => { if (!ctxMenu.hidden && !ctxMenu.contains(e.target)) closeCtxMenu(false); }, true);
+  window.addEventListener('resize', () => closeCtxMenu(false));
+  document.addEventListener('scroll', e => { if (!ctxMenu.contains(e.target)) closeCtxMenu(false); }, true);
+  const ctxHost = t => t.closest && !t.closest('dialog') && t.closest('.knob-ctl[data-path], input[type="range"][data-path], [data-learn]');
+  document.addEventListener('contextmenu', e => {
+    const host = ctxHost(e.target);
+    if (!host) return;
+    e.preventDefault();
+    openCtxMenu(host, e.clientX, e.clientY);
+  });
+  document.addEventListener('keydown', e => { // the menu key, or Shift F10, on a focused knob
+    if (e.key !== 'ContextMenu' && !(e.shiftKey && e.key === 'F10')) return;
+    const host = ctxHost(e.target);
+    if (!host) return;
+    e.preventDefault();
+    const r = (host.querySelector('.knob') || host).getBoundingClientRect();
+    openCtxMenu(host, r.left, r.bottom + 4);
+  }, true);
+
   // ---------- drum strip ----------
   // A generative drummer. The red energy line (same time axis as the canvas) says
   // how busy the drums are; eight macro knobs say what they play; the lanes show
@@ -4590,7 +4807,7 @@
     ['Edit', [[`${MOD} Z`, 'Undo'], [`Shift ${MOD} Z`, 'Redo'], [`${MOD} C`, 'Copy the selected line'], [`${MOD} V`, 'Paste it on the picked layer'], [`${MOD} D`, 'Duplicate the selected line'], ['Alt arrows', 'Nudge the selected line (Shift: bigger steps)'],
       ['Delete', 'Remove the selected line'], ['Double-click', 'Change the words of a text']]],
     ['Layers', [['1 … 8', 'Pick a layer'], ['D', 'Pick the drum layer'], ['N', 'New layer'], ['M', 'Mute the picked layer'], ['Shift S', 'Solo the picked layer']]],
-    ['Perform', [['W', 'Perform tab: scenes, macros, keys'], ['Shift 1 … 8', 'Launch a scene (an empty one saves the drawing)'], ['L', 'Learn: link the focused knob, slider or scene to your controller'], ['Esc', 'Stop learning or mapping']]],
+    ['Perform', [['W', 'Perform tab: scenes, macros, keys'], ['Shift 1 … 8', 'Launch a scene (an empty one saves the drawing)'], ['L', 'Learn: link the focused knob, slider or scene to your controller'], ['Right-click', 'On a knob: make it move by itself, or link it to MIDI (also the menu key or Shift F10)'], ['Esc', 'Stop learning or mapping']]],
     ['Windows', [['?', 'These shortcuts'], [`${MOD} ,`, 'Settings'], [`${MOD} S`, 'Save a version'], [`${MOD} E`, 'Export'], ['K', 'MIDI setup']]],
     ['Knobs', [['Arrows', 'Turn the focused knob (Shift: bigger steps)'], ['Home  End', 'Minimum or maximum'], ['L', 'Learn: link the focused knob to a controller knob']]],
   ];

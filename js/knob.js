@@ -27,6 +27,7 @@
           <path class="knob-track" d="${arc(24, START, END)}"/>
           <path class="knob-value"/>
           <line class="knob-pointer" x1="28" y1="28" x2="28" y2="14"/>
+          <circle class="knob-mod" cx="28" cy="4" r="3.2" visibility="hidden"/>
         </svg>
       </div>
       <div class="stepper">
@@ -146,8 +147,19 @@
     out.addEventListener('click', openEdit);
     out.title = 'Click to type a value';
 
+    // Where a motion (automatic movement) has the knob right now: a dot on the ring, null hides it.
+    const mod = el.querySelector('.knob-mod');
+    function setMod(v) {
+      if (v == null) { mod.setAttribute('visibility', 'hidden'); return; }
+      const deg = START + (Math.min(max, Math.max(min, v)) - min) / (max - min) * (END - START);
+      mod.setAttribute('transform', `rotate(${deg.toFixed(1)} 28 28)`);
+      mod.setAttribute('visibility', 'visible');
+    }
+
     paint();
-    return { el, set(v) { current = snap(v); paint(); } };
+    const api = { el, set(v) { current = snap(v); paint(); }, setMod };
+    el._knob = api;
+    return api;
   }
 
   ST.createKnob = createKnob;

@@ -208,33 +208,67 @@
     if (shape === 'random') return mulberry32(Math.floor(cycles) * 7919 + 13)() * 2 - 1; // a new step every cycle
     return Math.sin(ph * Math.PI * 2);
   }
-  // What an LFO target is, and the range it moves in.
-  function lfoRange(target) {
+  // Motions: the Motion card's LFO plus any knob set to move by itself (right-click a knob).
+  const motionsOf = l => (l ? [l.lfo, ...(l.motions || [])].filter(m => m && m.on && m.depth > 0 && m.target) : []);
+  const soundKnob = (key, drums) => (drums ? [...ST.DRUM_PANELS.source, ...ST.DRUM_PANELS.envelope] : ST.PANELS.filter(p => p.knobs && !p.vox).flatMap(p => p.knobs)).find(k => k.key === key);
+  // What a motion target is, and the range it moves in.
+  function lfoRange(target, drums) {
     if (target === 'volume') return { min: 0, max: 1.2 };
     if (target === 'pan') return { min: -1, max: 1 };
     if (target === 'send.room' || target === 'send.echo') return { min: 0, max: 100 };
     const [kind, id, key] = String(target).split('.');
+    if (kind === 'sound') { const k = soundKnob(id, drums); return k ? { min: k.min, max: k.max } : null; }
     const c = kind === 'fx' && FX_BY_ID[id] && FX_BY_ID[id].params.find(q => q.key === key && q.kind === 'knob');
     return c ? { min: c.min, max: c.max } : null;
   }
-  // The layer and FX as they sound at song time u: the stored values with the LFO applied.
-  function modView(layer, fx, u, bpm) {
-    const lfo = layer.lfo;
-    if (!lfo || !lfo.on || !lfo.depth) return { layer, fx };
-    const r = lfoRange(lfo.target);
-    if (!r) return { layer, fx };
-    const w = lfoWave(lfo.shape, u * bpm / 60 / Math.max(0.0625, lfo.rate)), span = (r.max - r.min) / 2 * lfo.depth / 100;
-    const bound = v => Math.min(r.max, Math.max(r.min, v));
-    if (lfo.target === 'volume') return { layer: { ...layer, volume: bound(layer.volume + w * span) }, fx };
-    if (lfo.target === 'pan') return { layer: { ...layer, pan: bound((layer.pan || 0) + w * span) }, fx };
-    if (lfo.target.startsWith('send.')) {
-      const k = lfo.target.slice(5), send = { room: 0, echo: 0, ...layer.send };
-      return { layer: { ...layer, send: { ...send, [k]: bound(send[k] + w * span) } }, fx };
-    }
-    const [, id, key] = lfo.target.split('.');
-    return { layer, fx: { ...fx, [id]: { ...fx[id], on: true, [key]: bound(fx[id][key] + w * span) } } };
+  // The value a motion gives at song time u, around the knob's own value.
+  function motionValue(m, base, r, u, bpm) {
+    const w = lfoWave(m.shape, u * bpm / 60 / Math.max(0.0625, m.rate)), span = (r.max - r.min) / 2 * m.depth / 100;
+    return Math.min(r.max, Math.max(r.min, base + w * span));
   }
-  const lfoActive = l => !!(l && l.lfo && l.lfo.on && l.lfo.depth > 0 && lfoRange(l.lfo.target));
+  // The layer and FX as they sound at song time u: the stored values with every motion applied.
+  function modView(layer, fx, u, bpm) {
+    let lay = layer, f = fx;
+    for (const m of motionsOf(layer)) {
+      const r = !m.target.startsWith('sound.') && lfoRange(m.target);
+      if (!r) continue;
+      const val = base => motionValue(m, base, r, u, bpm);
+      if (m.target === 'volume') lay = { ...lay, volume: val(lay.volume) };
+      else if (m.target === 'pan') lay = { ...lay, pan: val(lay.pan || 0) };
+      else if (m.target.startsWith('send.')) {
+        const k = m.target.slice(5), send = { room: 0, echo: 0, ...lay.send };
+        lay = { ...lay, send: { ...send, [k]: val(send[k]) } };
+      } else {
+        const [, id, key] = m.target.split('.');
+        f = { ...f, [id]: { ...f[id], on: true, [key]: val(f[id][key]) } };
+      }
+    }
+    return { layer: lay, fx: f };
+  }
+  const lfoActive = l => motionsOf(l).some(m => !m.target.startsWith('sound.') && lfoRange(m.target));
+  // Sound knobs (brightness, attack…) take their moving value at the start of each note or hit.
+  const soundMoves = l => motionsOf(l).some(m => m.target.startsWith('sound.'));
+  function soundAt(l, u, bpm, drums) {
+    const out = { ...l.sound };
+    for (const m of motionsOf(l)) {
+      if (!m.target.startsWith('sound.')) continue;
+      const key = m.target.slice(6), r = lfoRange(m.target, drums);
+      if (r && typeof out[key] === 'number') out[key] = motionValue(m, out[key], r, u, bpm);
+    }
+    return out;
+  }
+  // The master can move too: filter, Room and Echo levels, echo repeats.
+  const MASTER_RANGES = { filter: { min: -100, max: 100 }, roomlevel: { min: 0, max: 100 }, echolevel: { min: 0, max: 100 }, feedback: { min: 0, max: 90 } };
+  const masterMotions = m => ((m && m.motions) || []).filter(x => x && x.on && x.depth > 0 && MASTER_RANGES[x.target]);
+  function masterView(m, u, bpm) {
+    const ms = masterMotions(m);
+    if (!ms.length) return m;
+    const v = { ...m, room: { ...m.room }, echo: { ...m.echo } };
+    const get = { filter: () => v.filter, roomlevel: () => v.room.level, echolevel: () => v.echo.level, feedback: () => v.echo.feedback };
+    const set = { filter: x => { v.filter = x; }, roomlevel: x => { v.room.level = x; }, echolevel: x => { v.echo.level = x; }, feedback: x => { v.echo.feedback = x; } };
+    for (const x of ms) set[x.target](motionValue(x, get[x.target](), MASTER_RANGES[x.target], u, bpm));
+    return v;
+  }
 
   // ---------- graph ----------
   const noiseBufs = new WeakMap();
@@ -589,7 +623,7 @@
       const at = base + n.start;
       if (at < u0 || at >= u1) continue;
       const bends = tapeLen && at + n.dur > zone;
-      scheduleNote(ctx, bus.input, layer.sound, n, ctxAt(at), 0, registry, fx.vibrato, bends ? bend : null,
+      scheduleNote(ctx, bus.input, soundMoves(layer) ? soundAt(layer, at, project.bpm) : layer.sound, n, ctxAt(at), 0, registry, fx.vibrato, bends ? bend : null,
         { key: `${layer.id}:${n.key}@${k}`, bend: !!bends });
     }
 
@@ -615,10 +649,11 @@
     }
   }
 
+  // snd: the drum sound, or a function of song time when a drum sound knob moves by itself
   function scheduleDrums(ctx, bus, hits, k, L, u0, u1, ctxAt, snd) {
     for (const h of hits) {
       const at = k * L + h.t;
-      if (at >= u0 && at < u1) playDrumHit(ctx, bus, h, ctxAt(at), snd);
+      if (at >= u0 && at < u1) playDrumHit(ctx, bus, h, ctxAt(at), typeof snd === 'function' ? snd(at) : snd);
     }
   }
 
@@ -753,7 +788,8 @@
     // Master DJ filter and the shared Room / Echo returns.
     updateMaster(now = false) {
       if (!this.ctx) return;
-      const p = this.getProject(), m = p.master || MASTER_DEFAULT;
+      const p = this.getProject(), stored = p.master || MASTER_DEFAULT, pos = this.state && masterMotions(stored).length ? this.position() : null;
+      const m = pos ? masterView(stored, pos.u, p.bpm) : stored;
       setMasterFilter(this.master, this.ctx, m.filter, now);
       configureReturns(this.returns, this.ctx, m, p.bpm, now);
     }
@@ -808,7 +844,7 @@
             if (v && start <= now && v.reshape) { v.reshape(now, n, start, layer.sound); continue; }
             if (v) v.kill(now); // not started yet, or a voice that restarts mid-word
             const skip = Math.max(0, now - start);
-            scheduleNote(ctx, this.bus(layer).input, layer.sound, n, start + skip, skip, this.voices, this.fxOf(layer).vibrato, null, { key });
+            scheduleNote(ctx, this.bus(layer).input, soundMoves(layer) ? soundAt(layer, k * L + n.start, p.bpm) : layer.sound, n, start + skip, skip, this.voices, this.fxOf(layer).vibrato, null, { key });
           }
         }
       }
@@ -894,6 +930,7 @@
       const p = this.getProject();
       for (const l of p.layers) if (lfoActive(l)) this.updateLayer(l);
       if (lfoActive(p.drums)) this.updateDrums();
+      if (masterMotions(p.master).length) this.updateMaster();
     }
 
     // from: song time in seconds (may be past the first loop pass when resuming)
@@ -951,7 +988,7 @@
           schedulePass(ctx, this.bus(layer), layer, project, this.notes(layer, k, L, project), k, L, u0, u1, ctxAt, this.voices, this.fxOf(layer));
         }
         const d = project.drums;
-        scheduleDrums(ctx, this.drumBus, this.drums(k), k, L, u0, u1, ctxAt, d.sound);
+        scheduleDrums(ctx, this.drumBus, this.drums(k), k, L, u0, u1, ctxAt, soundMoves(d) ? u => soundAt(d, u, project.bpm, true) : d.sound);
         if (this.metronome) this.scheduleClicks(project, k, L, u0, u1, ctxAt);
         schedulePass(ctx, this.drumFx, d, project, [], k, L, u0, u1, ctxAt, null, this.fxOf(d)); // trance gate, tape stop
       }
@@ -1089,10 +1126,10 @@
     const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
     const ctx = new OAC(2, Math.ceil(sr * total), sr);
     const env = { bpm: project.bpm, worklet: await loadWorklet(ctx) };
-    const master = makeMaster(ctx), mset = project.master || MASTER_DEFAULT;
-    setMasterFilter(master, ctx, mset.filter, true);
+    const master = makeMaster(ctx), mset = project.master || MASTER_DEFAULT, m0 = masterView(mset, 0, project.bpm);
+    setMasterFilter(master, ctx, m0.filter, true);
     const returns = makeReturns(ctx, master.input);
-    configureReturns(returns, ctx, mset, project.bpm, true);
+    configureReturns(returns, ctx, m0, project.bpm, true);
     const layers = project.layers.filter(l => audible(l, project) && l.strokes.length);
     const view = (l, u) => (lfoActive(l) ? modView(l, l.fx, u, project.bpm) : { layer: l, fx: l.fx });
     const buses = new Map(layers.map(l => { const bus = makeBus(ctx, master.input, returns), v = view(l, 0); configureBus(bus, ctx, v.layer, env, true, true, v.fx); return [l.id, bus]; }));
@@ -1118,15 +1155,21 @@
         for (const l of layers) schedulePass(ctx, buses.get(l.id), l, project, notesOf(l, k), k, L, u0, u1, u => u, null);
         if (drumBus) {
           const melody = d.listen ? melodyActivity(project, L, layer => notesOf(layer, k)) : null;
-          scheduleDrums(ctx, drumBus, drumHits(d, project.bars, L, k, melody), k, L, u0, u1, u => u, d.sound);
+          scheduleDrums(ctx, drumBus, drumHits(d, project.bars, L, k, melody), k, L, u0, u1, u => u, soundMoves(d) ? x => soundAt(d, x, project.bpm, true) : d.sound);
           schedulePass(ctx, drumFx, d, project, [], k, L, u0, u1, u => u, null, d.fx);
         }
       }
     };
     // LFOs move at small steps while rendering (a few dozen per cycle).
     const moving = [...layers, ...(drumFx && lfoActive(d) ? [d] : [])].filter(lfoActive);
-    const lfoStep = moving.length ? Math.min(0.25, Math.max(0.03, Math.min(...moving.map(l => l.lfo.rate)) * 60 / project.bpm / 32)) : 0;
+    const rates = [...moving.flatMap(l => motionsOf(l).map(m => m.rate)), ...masterMotions(mset).map(m => m.rate)];
+    const lfoStep = rates.length ? Math.min(0.25, Math.max(0.03, Math.min(...rates) * 60 / project.bpm / 32)) : 0;
     const modulate = u => {
+      if (masterMotions(mset).length) {
+        const mv = masterView(mset, u, project.bpm);
+        setMasterFilter(master, ctx, mv.filter, false);
+        configureReturns(returns, ctx, mv, project.bpm, false);
+      }
       for (const l of moving) {
         const v = view(l, u);
         if (l === d) configureBus(drumFx, ctx, drumChannel(d, v.layer), env, true, false, v.fx);
@@ -1244,7 +1287,7 @@
   }
 
   Object.assign(ST, {
-    Engine, REGISTER, pitchLines, LFO_DEFAULT, LFO_RATES, MASTER_DEFAULT, lfoRange, snapMidi: (m, scale) => (SCALE_STEPS[scale] ? snapTo(m - rootKey, SCALE_STEPS[scale]) + rootKey : Math.round(m)), yToMidi, noteName, strokeSpan, renderWav, renderStems, buildMidi, setRootKey, KEY_NAMES: NAMES,
+    Engine, REGISTER, pitchLines, LFO_DEFAULT, LFO_RATES, MASTER_DEFAULT, MASTER_RANGES, lfoRange, motionValue, snapMidi: (m, scale) => (SCALE_STEPS[scale] ? snapTo(m - rootKey, SCALE_STEPS[scale]) + rootKey : Math.round(m)), yToMidi, noteName, strokeSpan, renderWav, renderStems, buildMidi, setRootKey, KEY_NAMES: NAMES,
     loopLength, readPos, readPlan, sliceOrder, collectNotes, audible,
   });
 })(window.ST = window.ST || {});
